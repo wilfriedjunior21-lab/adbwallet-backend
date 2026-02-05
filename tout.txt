@@ -1,0 +1,2 @@
+mongodb+srv://wilfriedjunior21_adb:wilfried#2005@clusteradbwallet.f4jeap2.mongodb.net/?appName=Clusteradbwallet
+129.0.213.195/32
