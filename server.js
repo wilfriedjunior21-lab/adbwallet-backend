@@ -102,6 +102,26 @@ app.get("/api/actions", async (req, res) => {
   );
   res.json(actions);
 });
+// --- RÉCUPÉRER LES ACTIONS D'UN VENDEUR/ACTIONNAIRE PRÉCIS ---
+app.get("/api/user/actions/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    // On cherche toutes les actions dont l'owner (propriétaire) est cet ID
+    const actions = await Action.find({ owner: userId });
+
+    if (!actions) {
+      return res.status(200).json([]); // Renvoie une liste vide si rien n'est trouvé
+    }
+
+    res.json(actions);
+  } catch (err) {
+    console.error("Erreur récup actions utilisateur:", err);
+    res
+      .status(500)
+      .json({ error: "Erreur lors de la récupération des actions" });
+  }
+});
 
 app.post("/api/actions/create", async (req, res) => {
   try {
