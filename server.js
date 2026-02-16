@@ -1,44 +1,41 @@
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
-const axios = require("axios"); // AJOUTÉ : Pour Campay
+const axios = require("axios");
 const multer = require("multer");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+
+// Import des modèles
 const User = require("./models/User");
 const Action = require("./models/Action");
 const Transaction = require("./models/Transaction");
 const sendEmail = require("./utils/mailer");
-const bcrypt = require("bcryptjs"); // Pour hacher les mots de passe
-const jwt = require("jsonwebtoken"); // Pour la connexion
+
 const app = express();
 const upload = multer({ dest: "uploads/" });
 
 app.use(express.json());
 app.use(cors());
 
-// Connexion à MongoDB
+// --- CONNEXION BASE DE DONNÉES ---
 mongoose
   .connect(
     "mongodb+srv://wilfriedjunior21_adb:wilfried2005@clusteradbwallet.f4jeap2.mongodb.net/?appName=Clusteradbwallet"
   )
-  .then(() => console.log("✅ Connecté à MongoDB"))
+  .then(() => console.log("✅ Connecté à MongoDB Atlas"))
   .catch((err) => console.error("❌ Erreur de connexion", err));
 
-// --- AUTHENTIFICATION (AJOUTÉ) ---
+// --- AUTHENTIFICATION ---
 
 app.post("/api/auth/register", async (req, res) => {
   try {
     const { name, email, password, role } = req.body;
-
-    // Vérifier si l'utilisateur existe déjà
     const userExists = await User.findOne({ email });
-    if (userExists) {
+    if (userExists)
       return res.status(400).json({ error: "Cet email est déjà utilisé." });
-    }
 
-    // Hachage du mot de passe
     const hashedPassword = await bcrypt.hash(password, 10);
-
-    // Création de l'utilisateur
     const newUser = new User({
       name,
       email,
@@ -49,10 +46,7 @@ app.post("/api/auth/register", async (req, res) => {
     await newUser.save();
     res.status(201).json({ message: "Utilisateur créé avec succès !" });
   } catch (err) {
-    console.error("Erreur Register:", err);
-    res
-      .status(500)
-      .json({ error: "Erreur lors de l'inscription sur le serveur." });
+    res.status(500).json({ error: "Erreur lors de l'inscription." });
   }
 });
 
@@ -67,10 +61,9 @@ app.post("/api/auth/login", async (req, res) => {
         .json({ error: "Email ou mot de passe incorrect." });
     }
 
-    // Création du Token de sécurité
     const token = jwt.sign(
       { id: user._id, role: user.role },
-      "VOTRE_CLE_SECRETE", // Idéalement à mettre dans .env
+      "VOTRE_CLE_SECRETE",
       { expiresIn: "24h" }
     );
 
@@ -84,98 +77,88 @@ app.post("/api/auth/login", async (req, res) => {
     res.status(500).json({ error: "Erreur lors de la connexion." });
   }
 });
-// --- ROUTES UTILISATEUR & ACTIONS ---
 
-app.get("/api/user/:id", async (req, res) => {
-  try {
-    const user = await User.findById(req.params.id).select("-password");
-    res.json(user);
-  } catch (err) {
-    res.status(404).json("Utilisateur non trouvé");
-  }
-});
+// --- GESTION DES ACTIONS ---
 
+// Toutes les actions en vente
 app.get("/api/actions", async (req, res) => {
-  const actions = await Action.find({ status: "en_vente" }).populate(
-    "owner",
-    "name"
-  );
-  res.json(actions);
-});
-// --- RÉCUPÉRER LES ACTIONS D'UN VENDEUR/ACTIONNAIRE PRÉCIS ---
-app.get("/api/user/actions/:userId", async (req, res) => {
   try {
-    const { userId } = req.params;
-
-    // On cherche toutes les actions dont l'owner (propriétaire) est cet ID
-    const actions = await Action.find({ owner: userId });
-
-    if (!actions) {
-      return res.status(200).json([]); // Renvoie une liste vide si rien n'est trouvé
-    }
-
+    const actions = await Action.find({ status: "en_vente" }).populate(
+      "owner",
+      "name"
+    );
     res.json(actions);
   } catch (err) {
-    console.error("Erreur récup actions utilisateur:", err);
-    res
-      .status(500)
-      .json({ error: "Erreur lors de la récupération des actions" });
+    res.status(500).json({ error: "Erreur récupération actions" });
   }
 });
 
-// --- RÉCUPÉRER LES TRANSACTIONS D'UN UTILISATEUR (ACHETEUR OU VENDEUR) ---
-app.get("/api/user/transactions/:userId", async (req, res) => {
-  try {
-    const { userId } = req.params;
-
-    // On cherche les transactions où l'utilisateur est soit l'acheteur, soit le vendeur
-    const transactions = await Transaction.find({
-      $or: [{ buyer: userId }, { seller: userId }],
-    })
-      .populate("buyer", "name")
-      .populate("seller", "name")
-      .populate("action", "companyName")
-      .sort({ createdAt: -1 }); // Les plus récentes en premier
-
-    res.json(transactions);
-  } catch (err) {
-    console.error("Erreur récup transactions:", err);
-    res
-      .status(500)
-      .json({ error: "Erreur lors de la récupération des transactions" });
-  }
-});
-
+// Créer une action (Route corrigée pour éviter l'erreur 500)
 app.post("/api/actions/create", async (req, res) => {
   try {
-    const nouvelleAction = new Action(req.body);
+    const { companyName, sector, pricePerShare, totalShares, owner } = req.body;
+
+    if (!owner)
+      return res.status(400).json({ error: "L'ID du propriétaire est requis" });
+
+    const nouvelleAction = new Action({
+      companyName,
+      sector,
+      pricePerShare: Number(pricePerShare),
+      totalShares: Number(totalShares),
+      owner,
+      status: "en_vente",
+    });
+
     await nouvelleAction.save();
     res.status(201).json({ message: "Action mise en vente !" });
   } catch (err) {
-    res.status(500).json("Erreur création action");
+    console.error(err);
+    res.status(500).json({ error: "Erreur lors de la création de l'action" });
   }
 });
 
-// --- ROUTES PAIEMENT CAMPAY (COLLECTE) ---
+// Actions spécifiques à un utilisateur (Actionnaire)
+app.get("/api/user/actions/:userId", async (req, res) => {
+  try {
+    const actions = await Action.find({ owner: req.params.userId });
+    res.json(actions || []);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur récupération actions utilisateur" });
+  }
+});
+
+// --- GESTION DES TRANSACTIONS ---
+
+// Historique des transactions d'un utilisateur
+app.get("/api/user/transactions/:userId", async (req, res) => {
+  try {
+    const transactions = await Transaction.find({
+      $or: [{ buyer: req.params.userId }, { seller: req.params.userId }],
+    })
+      .populate("buyer seller action")
+      .sort({ createdAt: -1 });
+    res.json(transactions);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur récupération transactions" });
+  }
+});
+
+// --- PAIEMENT CAMPAY ---
 
 app.post("/api/transactions/pay-campay", async (req, res) => {
   const { actionId, buyerId, amount, phoneNumber } = req.body;
   try {
-    const campayData = {
-      amount: amount,
-      currency: "XAF",
-      from: phoneNumber,
-      description: `Achat Action ADB`,
-      external_reference: `${Date.now()}`,
-    };
-
-    // Note: Utilise 'demo.campay.net' pour le Sandbox et 'www.campay.net' pour le Live
     const response = await axios.post(
       "https://demo.campay.net/api/collect/",
-      campayData,
       {
-        headers: { Authorization: `Token ${process.env.CAMPAY_TOKEN}` },
-      }
+        amount,
+        currency: "XAF",
+        from: phoneNumber,
+        description: `Achat Action ADB`,
+        external_reference: `${Date.now()}`,
+      },
+      { headers: { Authorization: `Token ${process.env.CAMPAY_TOKEN}` } }
     );
 
     if (response.data && response.data.reference) {
@@ -184,7 +167,7 @@ app.post("/api/transactions/pay-campay", async (req, res) => {
         action: actionId,
         buyer: buyerId,
         seller: action.owner,
-        amount: amount,
+        amount,
         status: "en_attente",
         campayReference: response.data.reference,
       });
@@ -196,90 +179,44 @@ app.post("/api/transactions/pay-campay", async (req, res) => {
   }
 });
 
-// --- ROUTES RETRAIT (WITHDRAW) ---
+// --- ADMIN ---
 
-// C'est cette route qui communique AVEC Campay pour envoyer le cash
-app.post("/api/admin/approve-withdrawal/:id", async (req, res) => {
+app.get("/api/admin/stats", async (req, res) => {
   try {
-    const trans = await Transaction.findById(req.params.id);
-
-    // APPEL À CAMPAY
-    const response = await axios.post(
-      "https://demo.campay.net/api/withdraw/", // URL de retrait
-      {
-        amount: trans.amount,
-        currency: "XAF",
-        to: trans.phoneNumber, // Le numéro saisi par le client
-        external_reference: trans._id,
-      },
-      {
-        headers: { Authorization: `Token ${process.env.CAMPAY_TOKEN}` },
-      }
+    const totalUsers = await User.countDocuments();
+    const transactions = await Transaction.find({ status: "valide" });
+    const totalVolume = transactions.reduce(
+      (acc, curr) => acc + curr.amount,
+      0
     );
-
-    // Si Campay confirme l'envoi, on valide en base de données
-    if (response.status === 200) {
-      const user = await User.findById(trans.buyer);
-      user.balance -= trans.amount; // On déduit le solde seulement quand c'est envoyé
-      trans.status = "valide";
-
-      await user.save();
-      await trans.save();
-      res.json({ message: "Argent envoyé avec succès via Campay !" });
-    }
+    res.json({ totalUsers, totalVolume });
   } catch (err) {
-    res.status(500).json({ error: "Erreur lors du transfert réel" });
+    res.status(500).json({ error: "Erreur stats" });
   }
 });
-
-// --- ROUTES ADMIN ---
 
 app.get("/api/admin/pending-transactions", async (req, res) => {
-  const trans = await Transaction.find({ status: "en_attente" }).populate(
-    "buyer seller action"
-  );
-  res.json(trans);
-});
-
-app.post("/api/admin/validate/:id", async (req, res) => {
   try {
-    const t = await Transaction.findById(req.params.id).populate(
+    const trans = await Transaction.find({ status: "en_attente" }).populate(
       "buyer seller action"
     );
-    if (!t || t.status !== "en_attente")
-      return res.status(400).send("Invalide");
-
-    const buyer = await User.findById(t.buyer._id);
-    const seller = await User.findById(t.seller._id);
-
-    // Transfert virtuel
-    buyer.balance -= t.amount;
-    seller.balance += t.amount;
-    t.status = "valide";
-
-    await buyer.save();
-    await seller.save();
-    await t.save();
-
-    // Emails
-    sendEmail(
-      buyer.email,
-      "Achat validé ✅",
-      `Votre achat pour ${t.action.companyName} est OK.`
-    );
-    sendEmail(
-      seller.email,
-      "Vente réussie 💰",
-      `Vous avez reçu ${t.amount} F.`
-    );
-
-    res.send("Validé !");
+    res.json(trans);
   } catch (err) {
-    res.status(500).send("Erreur validation");
+    res.status(500).json({ error: "Erreur admin transactions" });
   }
 });
 
-// --- KYC ---
+// --- INFOS UTILISATEUR & KYC ---
+
+app.get("/api/user/:id", async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id).select("-password");
+    res.json(user);
+  } catch (err) {
+    res.status(404).json("Utilisateur non trouvé");
+  }
+});
+
 app.post("/api/user/upload-kyc", upload.single("idCard"), async (req, res) => {
   try {
     await User.findByIdAndUpdate(req.body.userId, {
@@ -292,45 +229,6 @@ app.post("/api/user/upload-kyc", upload.single("idCard"), async (req, res) => {
   }
 });
 
-app.post("/api/admin/verify-user", async (req, res) => {
-  const { userId, decision } = req.body;
-  const user = await User.findByIdAndUpdate(userId, { kycStatus: decision });
-  const subject =
-    decision === "valide" ? "Compte Vérifié ✅" : "Document Rejeté ❌";
-  sendEmail(user.email, subject, `Votre compte est désormais ${decision}.`);
-  res.send("KYC traité");
-});
-// 1. Statistiques globales pour les cartes du haut
-app.get("/api/admin/stats", async (req, res) => {
-  try {
-    const totalUsers = await User.countDocuments();
-    const transactions = await Transaction.find({ status: "valide" });
-    const totalVolume = transactions.reduce(
-      (acc, curr) => acc + curr.amount,
-      0
-    );
-
-    res.json({ totalUsers, totalVolume });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur stats" });
-  }
-});
-
-// 2. Récupérer les KYC en attente avec les infos nécessaires
-app.get("/api/admin/pending-kyc", async (req, res) => {
-  const users = await User.find({ kycStatus: "en_attente" }).select(
-    "name email documentUrl"
-  );
-  res.json(users);
-});
-
-// 3. Récupérer les transactions avec les relations (Populate)
-app.get("/api/admin/pending-transactions", async (req, res) => {
-  const trans = await Transaction.find({ status: "en_attente" })
-    .populate("buyer", "name")
-    .populate("action", "companyName");
-  res.json(trans);
-});
-
+// --- LANCEMENT DU SERVEUR ---
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🚀 Serveur sur le port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Serveur actif sur le port ${PORT}`));
