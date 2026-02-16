@@ -80,7 +80,7 @@ app.post("/api/auth/login", async (req, res) => {
 
 // --- GESTION DES ACTIONS ---
 
-// Toutes les actions en vente
+// Liste de toutes les actions en vente
 app.get("/api/actions", async (req, res) => {
   try {
     const actions = await Action.find({ status: "en_vente" }).populate(
@@ -93,7 +93,7 @@ app.get("/api/actions", async (req, res) => {
   }
 });
 
-// Créer une action (Route corrigée pour éviter l'erreur 500)
+// CRÉER UNE ACTION (Correction des erreurs de validation 500/Logs)
 app.post("/api/actions/create", async (req, res) => {
   try {
     const { companyName, sector, pricePerShare, totalShares, owner } = req.body;
@@ -101,20 +101,24 @@ app.post("/api/actions/create", async (req, res) => {
     if (!owner)
       return res.status(400).json({ error: "L'ID du propriétaire est requis" });
 
+    // Récupération du vendeur pour le champ obligatoire sellerPhone
+    const user = await User.findById(owner);
+
     const nouvelleAction = new Action({
-      companyName,
-      sector,
-      pricePerShare: Number(pricePerShare),
-      totalShares: Number(totalShares),
-      owner,
+      companyName: companyName,
+      sector: sector,
+      price: Number(pricePerShare), // Traduction pour le modèle
+      quantity: Number(totalShares), // Traduction pour le modèle
+      sellerPhone: user?.phone || "00000000", // Champ requis par ton modèle
+      owner: owner,
       status: "en_vente",
     });
 
     await nouvelleAction.save();
     res.status(201).json({ message: "Action mise en vente !" });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Erreur lors de la création de l'action" });
+    console.error("ERREUR CRÉATION ACTION:", err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -130,7 +134,6 @@ app.get("/api/user/actions/:userId", async (req, res) => {
 
 // --- GESTION DES TRANSACTIONS ---
 
-// Historique des transactions d'un utilisateur
 app.get("/api/user/transactions/:userId", async (req, res) => {
   try {
     const transactions = await Transaction.find({
@@ -229,6 +232,6 @@ app.post("/api/user/upload-kyc", upload.single("idCard"), async (req, res) => {
   }
 });
 
-// --- LANCEMENT DU SERVEUR ---
+// --- LANCEMENT ---
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Serveur actif sur le port ${PORT}`));
