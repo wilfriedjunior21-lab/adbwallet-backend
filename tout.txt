@@ -1,2 +1,22 @@
 mongodb+srv://wilfriedjunior21_adb:wilfried#2005@clusteradbwallet.f4jeap2.mongodb.net/?appName=Clusteradbwallet
 129.0.213.195/32
+mongodb+srv://wilfriedjunior21_adb:wilfried2005@clusteradbwallet.f4jeap2.mongodb.net/?appName=Clusteradbwallet
+129.0.204.240/32
+voice ce que je veux je veux qu'on fasse une application fintech ou comme tu le sais bien des actionnaires viendront s'inscrire dans l'application et mettre en vente leur actions dans l'appli, et des acheteurs viendront aussi s'inscrire dans lapplication et verront 
+les actions que les actionnaires inscrits publieront, et par derriere un admin qui controllera toutes les transactions qui se feront a l'interieur de lapplication, donc je veux que toutes les donnees sortes de la bases de donnee et que l'application soit parfaites je veux le frontend et le backend les donnees qui safficheront sur 
+le frontend doivent sortir de la base de donnee, les acheteurs auront une page principale ou ils verront leurs soldes et une pages ou ils verront lhistorique de leurs transactions
+
+https://vscode.dev/github/wilfriedjunior21-lab/adbwallet-backend/blob/main
+
+TrcaKxIUtH8xriSALUX91FAnAg-jcX18_vOeHudzc0ShxEDubOfR6rrG7a8NhD8V65n9D_X7fOTyHQRj6ijkyQ
+
+TrcaKxIUtH8xriSALUX91FAnAg-jcX18_vOeHudzc0ShxEDubOfR6rrG7a8NhD8V65n9D_X7fOTyHQRj6ijkyQ
+
+5dd582806c9d02560611203da1e796627bac60b8  jetton
+
+r9SNzI58_Gk1-0iu9qG0lGzrG9OefkO2HJPa1KtGartwa56otG_5zIC1zGnmgNiIhhFsjojLZFyF85-BSt0hvw user
+
+ZanVmW0z5No950b0ljnOCDk2z4eNqBC4u4MHYAfDBxpQNSYjSNVpkvadiGyXiuEMGgIZD35wgWwG7Z3ihNqYrw  mdp
+
+C3GGQLoKJr9Ovi4ihBZrb5WD8bF_RrhzKsDUnub-8u4SnwGDUwRlrR_VQ2Vhzd4dFy2KLPp-KwDsjK27HoZF6w webhook
+12389000
