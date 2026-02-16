@@ -123,6 +123,29 @@ app.get("/api/user/actions/:userId", async (req, res) => {
   }
 });
 
+// --- RÉCUPÉRER LES TRANSACTIONS D'UN UTILISATEUR (ACHETEUR OU VENDEUR) ---
+app.get("/api/user/transactions/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    // On cherche les transactions où l'utilisateur est soit l'acheteur, soit le vendeur
+    const transactions = await Transaction.find({
+      $or: [{ buyer: userId }, { seller: userId }],
+    })
+      .populate("buyer", "name")
+      .populate("seller", "name")
+      .populate("action", "companyName")
+      .sort({ createdAt: -1 }); // Les plus récentes en premier
+
+    res.json(transactions);
+  } catch (err) {
+    console.error("Erreur récup transactions:", err);
+    res
+      .status(500)
+      .json({ error: "Erreur lors de la récupération des transactions" });
+  }
+});
+
 app.post("/api/actions/create", async (req, res) => {
   try {
     const nouvelleAction = new Action(req.body);
