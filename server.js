@@ -167,7 +167,7 @@ app.post("/api/transactions/pay-mashapay", async (req, res) => {
         phone_number: formattedPhone,
         external_id: `ADB_${Date.now()}`,
         callback_url:
-          "https://votre-backend.onrender.com/api/transactions/callback",
+          "https://adbwallet-backend.onrender.com//api/transactions/callback",
         description: "Achat d'actions sur ADB Wallet",
       },
       {
