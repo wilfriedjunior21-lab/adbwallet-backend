@@ -149,36 +149,57 @@ app.get("/api/user/transactions/:userId", async (req, res) => {
 
 // --- PAIEMENT CAMPAY ---
 
-app.post("/api/transactions/pay-campay", async (req, res) => {
+app.post("/api/transactions/pay-mashapay", async (req, res) => {
   const { actionId, buyerId, amount, phoneNumber } = req.body;
+
   try {
+    // 1. Nettoyage du numéro (MashaPay préfère souvent le format 6XXXXXXXX)
+    let formattedPhone = phoneNumber.replace(/\s/g, "");
+    if (formattedPhone.startsWith("237")) {
+      formattedPhone = formattedPhone.substring(3);
+    }
+
+    // 2. Appel à l'API MashaPay
     const response = await axios.post(
-      "https://demo.campay.net/api/collect/",
+      "https://api.mashapay.com/v1/payment/request", // Vérifie l'URL exacte dans ta doc MashaPay
       {
-        amount,
-        currency: "XAF",
-        from: phoneNumber,
-        description: `Achat Action ADB`,
-        external_reference: `${Date.now()}`,
+        amount: amount,
+        phone_number: formattedPhone,
+        external_id: `ADB_${Date.now()}`,
+        callback_url:
+          "https://votre-backend.onrender.com/api/transactions/callback",
+        description: "Achat d'actions sur ADB Wallet",
       },
-      { headers: { Authorization: `Token ${process.env.CAMPAY_TOKEN}` } }
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.MASHAPAY_API_KEY}`,
+          "X-Integration-ID": process.env.MASHAPAY_INTEGRATION_ID,
+        },
+      }
     );
 
-    if (response.data && response.data.reference) {
+    if (response.data && response.data.status === "success") {
       const action = await Action.findById(actionId);
+
       const newTransaction = new Transaction({
         action: actionId,
         buyer: buyerId,
         seller: action.owner,
         amount,
         status: "en_attente",
-        campayReference: response.data.reference,
+        mashapayReference:
+          response.data.reference || response.data.transaction_id,
       });
+
       await newTransaction.save();
-      res.json({ success: true, message: "USSD envoyé !" });
+      res.json({
+        success: true,
+        message: "Veuillez valider sur votre téléphone",
+      });
     }
   } catch (err) {
-    res.status(500).json({ error: "Erreur Campay Collect" });
+    console.error("ERREUR MASHAPAY:", err.response?.data || err.message);
+    res.status(500).json({ error: "Échec de l'initialisation MashaPay" });
   }
 });
 
