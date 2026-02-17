@@ -187,6 +187,41 @@ app.post("/api/admin/verify-kyc", async (req, res) => {
   }
 });
 
+// Récupérer toutes les transactions en attente pour l'admin
+app.get("/api/admin/pending-transactions", async (req, res) => {
+  try {
+    const transactions = await Transaction.find({ status: "en_attente" })
+      .populate("buyer", "name email")
+      .populate("seller", "name email")
+      .populate("action", "companyName");
+    res.json(transactions);
+  } catch (err) {
+    res
+      .status(500)
+      .json({ error: "Erreur récupération transactions en attente" });
+  }
+});
+
+// Valider manuellement une transaction (par exemple après vérification MashaPay)
+app.post("/api/admin/verify-transaction", async (req, res) => {
+  const { transactionId, status } = req.body; // status: "valide" ou "rejete"
+  try {
+    const transaction = await Transaction.findById(transactionId);
+    if (!transaction)
+      return res.status(404).json({ error: "Transaction non trouvée" });
+
+    transaction.status = status;
+    await transaction.save();
+
+    // Si la transaction est validée, on pourrait ici transférer les actions
+    // ou mettre à jour les soldes si ce n'est pas déjà fait.
+
+    res.json({ message: `Transaction ${status}` });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur validation transaction" });
+  }
+});
+
 // --- INFOS UTILISATEUR ---
 
 app.get("/api/user/:id", async (req, res) => {
