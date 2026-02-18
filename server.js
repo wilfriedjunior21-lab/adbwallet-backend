@@ -1,10 +1,11 @@
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
+const axios = require("axios");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
-// Import des modèles (Assure-toi que ces fichiers existent dans ton dossier /models)
+// Import des modèles
 const User = require("./models/User");
 const Action = require("./models/Action");
 const Transaction = require("./models/Transaction");
@@ -32,6 +33,8 @@ app.post("/api/auth/register", async (req, res) => {
       email,
       password: hashed,
       role: role || "acheteur",
+      kycStatus: "non_verifie",
+      balance: 0,
     });
     await user.save();
     res.status(201).json({ message: "Utilisateur créé" });
@@ -61,7 +64,10 @@ app.post("/api/auth/login", async (req, res) => {
 
 app.get("/api/actions", async (req, res) => {
   try {
-    const actions = await Action.find({ status: "en_vente" });
+    const actions = await Action.find({ status: "en_vente" }).populate(
+      "owner",
+      "name"
+    );
     res.json(actions);
   } catch (err) {
     res.status(500).json({ error: "Erreur récupération actions" });
@@ -86,29 +92,59 @@ app.post("/api/actions/create", async (req, res) => {
   }
 });
 
-// --- PAIEMENT MASHAPAY & TRANSACTIONS ---
+// --- PAIEMENT MASHAPAY (VRAI PUSH USSD) ---
 
 app.post("/api/transactions/pay-mashapay", async (req, res) => {
   const { actionId, buyerId, amount, phoneNumber } = req.body;
+
   try {
-    const action = await Action.findById(actionId);
-    const newTrans = new Transaction({
-      action: actionId,
-      buyer: buyerId,
-      seller: action.owner,
-      amount,
-      phoneNumber,
-      status: "en_attente",
-      type: "achat",
-    });
-    await newTrans.save();
-    res.json({ success: true, message: "Paiement MashaPay initié" });
+    const formattedPhone = phoneNumber.startsWith("237")
+      ? phoneNumber
+      : `237${phoneNumber}`;
+
+    // APPEL À L'API MASHAPAY
+    const mashapayResponse = await axios.post(
+      "https://api.mashapay.com/v1/payment/request",
+      {
+        amount: amount,
+        phone_number: formattedPhone,
+        integration_id: "TON_INTEGRATION_ID", // À REMPLACER
+        external_id: `ADB_${Date.now()}`,
+        description: "Achat d'actions sur ADB Wallet",
+        callback_url: "https://adbwallet-backend.onrender.com/api/callback",
+      },
+      {
+        headers: { Authorization: `Bearer TON_API_KEY` }, // À REMPLACER
+      }
+    );
+
+    if (mashapayResponse.data.status === "success") {
+      const action = await Action.findById(actionId);
+      const newTrans = new Transaction({
+        action: actionId,
+        buyer: buyerId,
+        seller: action.owner,
+        amount,
+        phoneNumber: formattedPhone,
+        status: "en_attente",
+        type: "achat",
+        paymentReference: mashapayResponse.data.reference,
+      });
+      await newTrans.save();
+      res.json({
+        success: true,
+        message: "Validez le push sur votre téléphone !",
+      });
+    } else {
+      res.status(400).json({ error: "MashaPay a refusé la requête" });
+    }
   } catch (err) {
-    res.status(500).json({ error: "Erreur MashaPay" });
+    console.error("Erreur MashaPay:", err.response?.data || err.message);
+    res.status(500).json({ error: "Impossible d'initier le paiement" });
   }
 });
 
-// --- KYC (SOUUMISSION) ---
+// --- KYC & INFOS UTILISATEURS ---
 
 app.post("/api/user/submit-kyc", async (req, res) => {
   const { userId, documentUrl } = req.body;
@@ -123,13 +159,25 @@ app.post("/api/user/submit-kyc", async (req, res) => {
   }
 });
 
+app.get("/api/user/:id", async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id).select("-password");
+    res.json(user);
+  } catch (err) {
+    res.status(404).json({ error: "Utilisateur non trouvé" });
+  }
+});
+
 // --- ADMINISTRATION (COMMAND CENTER) ---
 
 app.get("/api/admin/stats", async (req, res) => {
   try {
     const totalUsers = await User.countDocuments();
-    const trans = await Transaction.find({ status: "valide" });
-    const totalVolume = trans.reduce((acc, curr) => acc + curr.amount, 0);
+    const transValides = await Transaction.find({ status: "valide" });
+    const totalVolume = transValides.reduce(
+      (acc, curr) => acc + curr.amount,
+      0
+    );
     const pendingPurchases = await Transaction.countDocuments({
       status: "en_attente",
       type: "achat",
@@ -166,7 +214,7 @@ app.get("/api/admin/pending-transactions", async (req, res) => {
   }
 });
 
-// ROUTE CRUCIALE : Validation (KYC ou Transaction)
+// LA ROUTE DE VALIDATION (Pour corriger tes erreurs 404)
 app.post("/api/admin/validate/:id", async (req, res) => {
   const { id } = req.params;
   const { type, status } = req.body;
@@ -182,16 +230,7 @@ app.post("/api/admin/validate/:id", async (req, res) => {
   }
 });
 
-// --- INFOS UTILISATEUR & HISTORIQUE ---
-
-app.get("/api/user/:id", async (req, res) => {
-  try {
-    const user = await User.findById(req.params.id).select("-password");
-    res.json(user);
-  } catch (err) {
-    res.status(404).json({ error: "User not found" });
-  }
-});
+// --- HISTORIQUE ---
 
 app.get("/api/user/transactions/:userId", async (req, res) => {
   try {
@@ -206,14 +245,5 @@ app.get("/api/user/transactions/:userId", async (req, res) => {
   }
 });
 
-app.get("/api/user/actions/:userId", async (req, res) => {
-  try {
-    const a = await Action.find({ owner: req.params.userId });
-    res.json(a);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur actions" });
-  }
-});
-
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🚀 Serveur sur port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Serveur actif sur le port ${PORT}`));

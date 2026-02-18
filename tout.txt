@@ -20,3 +20,5 @@ ZanVmW0z5No950b0ljnOCDk2z4eNqBC4u4MHYAfDBxpQNSYjSNVpkvadiGyXiuEMGgIZD35wgWwG7Z3i
 
 C3GGQLoKJr9Ovi4ihBZrb5WD8bF_RrhzKsDUnub-8u4SnwGDUwRlrR_VQ2Vhzd4dFy2KLPp-KwDsjK27HoZF6w webhook
 12389000
+
+met tout ce qu'on a deja coder dans le server.js pour qu'il y ait plus d'erreur stp
