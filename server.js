@@ -5,7 +5,7 @@ const axios = require("axios");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
-// Import des modèles (Assure-toi que les fichiers existent dans /models)
+// Import des modèles
 const User = require("./models/User");
 const Action = require("./models/Action");
 const Transaction = require("./models/Transaction");
@@ -15,18 +15,26 @@ app.use(express.json());
 app.use(cors());
 
 // --- CONNEXION MONGODB ---
+const mongoURI =
+  "mongodb+srv://wilfriedjunior21_adb:wilfried2005@clusteradbwallet.f4jeap2.mongodb.net/?appName=Clusteradbwallet";
+
 mongoose
-  .connect(
-    "mongodb+srv://wilfriedjunior21_adb:wilfried2005@clusteradbwallet.f4jeap2.mongodb.net/?appName=Clusteradbwallet"
-  )
-  .then(() => console.log("✅ Connecté à MongoDB"))
-  .catch((err) => console.error("❌ Erreur de connexion", err));
+  .connect(mongoURI)
+  .then(() => console.log("✅ MongoDB Connecté avec succès"))
+  .catch((err) => console.error("❌ Erreur de connexion Mongo:", err));
 
 // --- AUTHENTIFICATION ---
 
+// Inscription
 app.post("/api/auth/register", async (req, res) => {
   try {
-    const { name, email, password, role } = req.body;
+    const { name, password, role } = req.body;
+    const email = req.body.email.trim().toLowerCase(); // Nettoyage email
+
+    const existingUser = await User.findOne({ email });
+    if (existingUser)
+      return res.status(400).json({ error: "Cet email est déjà utilisé" });
+
     const hashed = await bcrypt.hash(password, 10);
     const user = new User({
       name,
@@ -36,95 +44,87 @@ app.post("/api/auth/register", async (req, res) => {
       kycStatus: "non_verifie",
       balance: 0,
     });
+
     await user.save();
-    res.status(201).json({ message: "Utilisateur créé" });
+    console.log(`👤 Nouvel utilisateur : ${email} (${user.role})`);
+    res.status(201).json({ success: true, message: "Utilisateur créé" });
   } catch (err) {
+    console.error("Erreur Register:", err);
     res.status(500).json({ error: "Erreur lors de l'inscription" });
   }
 });
 
+// Connexion
 app.post("/api/auth/login", async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const email = req.body.email.trim().toLowerCase();
+    const { password } = req.body;
+
+    console.log(`🔑 Tentative de connexion : ${email}`);
+
     const user = await User.findOne({ email });
-    if (!user || !(await bcrypt.compare(password, user.password))) {
-      return res.status(401).json({ error: "Identifiants invalides" });
+    if (!user) {
+      console.log("❌ Utilisateur introuvable");
+      return res.status(401).json({ error: "Identifiants incorrects" });
     }
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      console.log("❌ Mot de passe incorrect");
+      return res.status(401).json({ error: "Identifiants incorrects" });
+    }
+
     const token = jwt.sign(
       { id: user._id, role: user.role },
-      "VOTRE_CLE_SECRETE"
+      "CLE_TRANS_SECRET",
+      { expiresIn: "24h" }
     );
-    res.json({ token, userId: user._id, role: user.role, name: user.name });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur de connexion" });
-  }
-});
 
-// --- GESTION DES ACTIONS ---
-
-app.get("/api/actions", async (req, res) => {
-  try {
-    const actions = await Action.find({ status: "en_vente" }).populate(
-      "owner",
-      "name"
-    );
-    res.json(actions);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur récupération actions" });
-  }
-});
-
-app.post("/api/actions/create", async (req, res) => {
-  try {
-    const { companyName, sector, pricePerShare, totalShares, owner } = req.body;
-    const nouvelleAction = new Action({
-      companyName,
-      sector,
-      price: Number(pricePerShare),
-      quantity: Number(totalShares),
-      owner,
-      status: "en_vente",
+    console.log("✅ Connexion réussie");
+    res.json({
+      token,
+      userId: user._id,
+      role: user.role,
+      name: user.name,
     });
-    await nouvelleAction.save();
-    res.status(201).json({ message: "Action créée" });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("Erreur Login:", err);
+    res.status(500).json({ error: "Erreur serveur lors de la connexion" });
   }
 });
 
-// --- PAIEMENT MASHAPAY (DÉCLENCHEMENT DU PUSH) ---
+// --- TRANSACTIONS (ACHAT & RETRAIT) ---
 
 app.post("/api/transactions/pay-mashapay", async (req, res) => {
-  const { actionId, buyerId, amount, phoneNumber } = req.body;
-
   try {
-    // Formatage du numéro pour le Cameroun (MashaPay demande souvent 237)
+    const { actionId, buyerId, amount, phoneNumber } = req.body;
+    const user = await User.findById(buyerId);
+
+    if (user.kycStatus !== "valide") {
+      return res
+        .status(403)
+        .json({ error: "KYC requis pour effectuer un achat." });
+    }
+
     const formattedPhone = phoneNumber.startsWith("237")
       ? phoneNumber
       : `237${phoneNumber}`;
 
-    // REQUÊTE VERS L'API MASHAPAY
-    const mashapayResponse = await axios.post(
+    // Note: Remplace TON_ID et TON_KEY par tes vraies clés MashaPay
+    const response = await axios.post(
       "https://api.mashapay.com/v1/payment/request",
       {
-        amount: amount,
+        amount,
         phone_number: formattedPhone,
-        integration_id:
-          "MP-SBPK-NxaQdDqUw2SGHK$7j69g$lVOYgXJOD$gWyRTsUXVTW8KyEowXd$hARyjbQhKXea.Q1S.om7i0$d0AF8E1PWw$XWm2S3XQc1NR7Jg9e09SYuR21MS8etn23Hn",
+        integration_id: "TON_ID",
         external_id: `ADB_${Date.now()}`,
-        description: "Achat d'actions sur ADB Wallet",
-        callback_url: "https://adbwallet-backend.onrender.com/api/callback",
       },
-      {
-        headers: {
-          Authorization: `Bearer MP-SBPK-$zMD3ZEdBy1hwsle2y8N1YQ0ymr$9ke$NkTv.YoQ7UDiyd0djHZTy60xCtCdQ86edQ8X2M$1UWJS5$uKbcfKZd$wemnxtHmHFa.pB4DNJ7d4K3G/PK2/X2sv`,
-        }, // ⚠️ À REMPLACER
-      }
+      { headers: { Authorization: `Bearer TON_KEY` } }
     );
 
     if (
-      mashapayResponse.data.status === "success" ||
-      mashapayResponse.data.status === "pending"
+      response.data.status === "success" ||
+      response.data.status === "pending"
     ) {
       const action = await Action.findById(actionId);
       const newTrans = new Transaction({
@@ -132,48 +132,73 @@ app.post("/api/transactions/pay-mashapay", async (req, res) => {
         buyer: buyerId,
         seller: action.owner,
         amount,
-        phoneNumber: formattedPhone,
         status: "en_attente",
         type: "achat",
-        paymentReference: mashapayResponse.data.reference,
+        phoneNumber: formattedPhone,
+        paymentReference: response.data.reference,
       });
       await newTrans.save();
       res.json({
         success: true,
-        message: "Paiement initié ! Validez sur votre téléphone.",
+        message: "Validez la transaction sur votre téléphone",
       });
-    } else {
-      res.status(400).json({ error: "MashaPay a refusé la requête" });
     }
   } catch (err) {
-    console.error("Erreur MashaPay:", err.response?.data || err.message);
-    res.status(500).json({ error: "Impossible d'initier le paiement" });
+    console.error("Erreur MashaPay:", err);
+    res.status(500).json({ error: "Erreur lors du paiement MashaPay" });
   }
 });
 
-// --- ADMINISTRATION & VALIDATION (MAJ SOLDE AUTOMATIQUE) ---
+app.post("/api/transactions/withdraw", async (req, res) => {
+  try {
+    const { userId, amount, phoneNumber } = req.body;
+    const user = await User.findById(userId);
+
+    if (user.kycStatus !== "valide") {
+      return res.status(403).json({ error: "KYC requis pour le retrait." });
+    }
+    if (user.balance < amount) {
+      return res.status(400).json({ error: "Solde insuffisant." });
+    }
+
+    const withdrawal = new Transaction({
+      buyer: userId,
+      amount,
+      phoneNumber,
+      type: "retrait",
+      status: "en_attente",
+    });
+    await withdrawal.save();
+    res.json({ success: true, message: "Demande de retrait enregistrée" });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur retrait" });
+  }
+});
+
+// --- ADMINISTRATION (VALIDATION) ---
 
 app.post("/api/admin/validate/:id", async (req, res) => {
-  const { id } = req.params;
-  const { type, status } = req.body;
   try {
+    const { id } = req.params;
+    const { type, status } = req.body;
+
     if (type === "kyc") {
       await User.findByIdAndUpdate(id, { kycStatus: status });
     } else {
-      // Validation d'une TRANSACTION
-      const transaction = await Transaction.findById(id);
-      if (!transaction)
-        return res.status(404).json({ error: "Transaction non trouvée" });
-
-      // Si on valide un ACHAT, on augmente le solde de l'acheteur
-      if (status === "valide" && transaction.status !== "valide") {
-        await User.findByIdAndUpdate(transaction.buyer, {
-          $inc: { balance: transaction.amount },
-        });
+      const trans = await Transaction.findById(id);
+      if (status === "valide" && trans.status !== "valide") {
+        if (trans.type === "achat") {
+          await User.findByIdAndUpdate(trans.buyer, {
+            $inc: { balance: trans.amount },
+          });
+        } else if (trans.type === "retrait") {
+          await User.findByIdAndUpdate(trans.buyer, {
+            $inc: { balance: -trans.amount },
+          });
+        }
       }
-
-      transaction.status = status;
-      await transaction.save();
+      trans.status = status;
+      await trans.save();
     }
     res.json({ success: true });
   } catch (err) {
@@ -181,85 +206,37 @@ app.post("/api/admin/validate/:id", async (req, res) => {
   }
 });
 
-app.get("/api/admin/stats", async (req, res) => {
-  try {
-    const totalUsers = await User.countDocuments();
-    const transValides = await Transaction.find({ status: "valide" });
-    const totalVolume = transValides.reduce(
-      (acc, curr) => acc + curr.amount,
-      0
-    );
-    const pendingCount = await Transaction.countDocuments({
-      status: "en_attente",
-    });
-
-    res.json({
-      totalUsers,
-      totalVolume,
-      pendingPurchasesCount: pendingCount,
-      pendingWithdrawalsCount: 0,
-    });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur Stats" });
-  }
-});
+// --- RÉCUPÉRATION DE DONNÉES ---
 
 app.get("/api/admin/pending-kyc", async (req, res) => {
-  try {
-    const users = await User.find({ kycStatus: "en_attente" });
-    res.json(users);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur KYC" });
-  }
+  res.json(await User.find({ kycStatus: "en_attente" }));
 });
 
 app.get("/api/admin/pending-transactions", async (req, res) => {
-  try {
-    const trans = await Transaction.find({ status: "en_attente" })
-      .populate("buyer", "name email")
-      .populate("action", "companyName");
-    res.json(trans);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur Transactions" });
-  }
+  res.json(
+    await Transaction.find({ status: "en_attente" })
+      .populate("buyer")
+      .populate("action")
+  );
 });
-
-// --- INFOS UTILISATEUR & HISTORIQUE ---
 
 app.get("/api/user/:id", async (req, res) => {
-  try {
-    const user = await User.findById(req.params.id).select("-password");
-    res.json(user);
-  } catch (err) {
-    res.status(404).json({ error: "Utilisateur non trouvé" });
-  }
+  res.json(await User.findById(req.params.id));
 });
 
-app.get("/api/user/transactions/:userId", async (req, res) => {
-  try {
-    const t = await Transaction.find({
-      $or: [{ buyer: req.params.userId }, { seller: req.params.userId }],
-    })
-      .populate("action")
-      .sort({ createdAt: -1 });
-    res.json(t);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur historique" });
-  }
+app.get("/api/actions", async (req, res) => {
+  res.json(await Action.find({ status: "en_vente" }).populate("owner"));
 });
 
 app.post("/api/user/submit-kyc", async (req, res) => {
   const { userId, documentUrl } = req.body;
-  try {
-    await User.findByIdAndUpdate(userId, {
-      kycStatus: "en_attente",
-      documentUrl,
-    });
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur KYC" });
-  }
+  await User.findByIdAndUpdate(userId, {
+    kycStatus: "en_attente",
+    documentUrl,
+  });
+  res.json({ success: true });
 });
 
+// --- DÉMARRAGE ---
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🚀 Serveur en ligne sur le port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Serveur actif sur le port ${PORT}`));
