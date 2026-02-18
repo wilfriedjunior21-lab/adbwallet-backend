@@ -109,13 +109,16 @@ app.post("/api/transactions/pay-mashapay", async (req, res) => {
       {
         amount: amount,
         phone_number: formattedPhone,
-        integration_id: "TON_INTEGRATION_ID", // ⚠️ À REMPLACER
+        integration_id:
+          "MP-SBPK-NxaQdDqUw2SGHK$7j69g$lVOYgXJOD$gWyRTsUXVTW8KyEowXd$hARyjbQhKXea.Q1S.om7i0$d0AF8E1PWw$XWm2S3XQc1NR7Jg9e09SYuR21MS8etn23Hn",
         external_id: `ADB_${Date.now()}`,
         description: "Achat d'actions sur ADB Wallet",
         callback_url: "https://adbwallet-backend.onrender.com/api/callback",
       },
       {
-        headers: { Authorization: `Bearer TON_API_KEY` }, // ⚠️ À REMPLACER
+        headers: {
+          Authorization: `Bearer MP-SBPK-$zMD3ZEdBy1hwsle2y8N1YQ0ymr$9ke$NkTv.YoQ7UDiyd0djHZTy60xCtCdQ86edQ8X2M$1UWJS5$uKbcfKZd$wemnxtHmHFa.pB4DNJ7d4K3G/PK2/X2sv`,
+        }, // ⚠️ À REMPLACER
       }
     );
 
