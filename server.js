@@ -5,7 +5,7 @@ const axios = require("axios");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
-// Import des modèles
+// Import des modèles (Assure-toi que les fichiers existent dans /models)
 const User = require("./models/User");
 const Action = require("./models/Action");
 const Transaction = require("./models/Transaction");
@@ -92,33 +92,37 @@ app.post("/api/actions/create", async (req, res) => {
   }
 });
 
-// --- PAIEMENT MASHAPAY (VRAI PUSH USSD) ---
+// --- PAIEMENT MASHAPAY (DÉCLENCHEMENT DU PUSH) ---
 
 app.post("/api/transactions/pay-mashapay", async (req, res) => {
   const { actionId, buyerId, amount, phoneNumber } = req.body;
 
   try {
+    // Formatage du numéro pour le Cameroun (MashaPay demande souvent 237)
     const formattedPhone = phoneNumber.startsWith("237")
       ? phoneNumber
       : `237${phoneNumber}`;
 
-    // APPEL À L'API MASHAPAY
+    // REQUÊTE VERS L'API MASHAPAY
     const mashapayResponse = await axios.post(
       "https://api.mashapay.com/v1/payment/request",
       {
         amount: amount,
         phone_number: formattedPhone,
-        integration_id: "TON_INTEGRATION_ID", // À REMPLACER
+        integration_id: "TON_INTEGRATION_ID", // ⚠️ À REMPLACER
         external_id: `ADB_${Date.now()}`,
         description: "Achat d'actions sur ADB Wallet",
         callback_url: "https://adbwallet-backend.onrender.com/api/callback",
       },
       {
-        headers: { Authorization: `Bearer TON_API_KEY` }, // À REMPLACER
+        headers: { Authorization: `Bearer TON_API_KEY` }, // ⚠️ À REMPLACER
       }
     );
 
-    if (mashapayResponse.data.status === "success") {
+    if (
+      mashapayResponse.data.status === "success" ||
+      mashapayResponse.data.status === "pending"
+    ) {
       const action = await Action.findById(actionId);
       const newTrans = new Transaction({
         action: actionId,
@@ -133,7 +137,7 @@ app.post("/api/transactions/pay-mashapay", async (req, res) => {
       await newTrans.save();
       res.json({
         success: true,
-        message: "Validez le push sur votre téléphone !",
+        message: "Paiement initié ! Validez sur votre téléphone.",
       });
     } else {
       res.status(400).json({ error: "MashaPay a refusé la requête" });
@@ -144,31 +148,35 @@ app.post("/api/transactions/pay-mashapay", async (req, res) => {
   }
 });
 
-// --- KYC & INFOS UTILISATEURS ---
+// --- ADMINISTRATION & VALIDATION (MAJ SOLDE AUTOMATIQUE) ---
 
-app.post("/api/user/submit-kyc", async (req, res) => {
-  const { userId, documentUrl } = req.body;
+app.post("/api/admin/validate/:id", async (req, res) => {
+  const { id } = req.params;
+  const { type, status } = req.body;
   try {
-    await User.findByIdAndUpdate(userId, {
-      kycStatus: "en_attente",
-      documentUrl,
-    });
+    if (type === "kyc") {
+      await User.findByIdAndUpdate(id, { kycStatus: status });
+    } else {
+      // Validation d'une TRANSACTION
+      const transaction = await Transaction.findById(id);
+      if (!transaction)
+        return res.status(404).json({ error: "Transaction non trouvée" });
+
+      // Si on valide un ACHAT, on augmente le solde de l'acheteur
+      if (status === "valide" && transaction.status !== "valide") {
+        await User.findByIdAndUpdate(transaction.buyer, {
+          $inc: { balance: transaction.amount },
+        });
+      }
+
+      transaction.status = status;
+      await transaction.save();
+    }
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: "Erreur KYC" });
+    res.status(500).json({ error: "Erreur lors de la validation" });
   }
 });
-
-app.get("/api/user/:id", async (req, res) => {
-  try {
-    const user = await User.findById(req.params.id).select("-password");
-    res.json(user);
-  } catch (err) {
-    res.status(404).json({ error: "Utilisateur non trouvé" });
-  }
-});
-
-// --- ADMINISTRATION (COMMAND CENTER) ---
 
 app.get("/api/admin/stats", async (req, res) => {
   try {
@@ -178,15 +186,14 @@ app.get("/api/admin/stats", async (req, res) => {
       (acc, curr) => acc + curr.amount,
       0
     );
-    const pendingPurchases = await Transaction.countDocuments({
+    const pendingCount = await Transaction.countDocuments({
       status: "en_attente",
-      type: "achat",
     });
 
     res.json({
       totalUsers,
       totalVolume,
-      pendingPurchasesCount: pendingPurchases,
+      pendingPurchasesCount: pendingCount,
       pendingWithdrawalsCount: 0,
     });
   } catch (err) {
@@ -214,23 +221,16 @@ app.get("/api/admin/pending-transactions", async (req, res) => {
   }
 });
 
-// LA ROUTE DE VALIDATION (Pour corriger tes erreurs 404)
-app.post("/api/admin/validate/:id", async (req, res) => {
-  const { id } = req.params;
-  const { type, status } = req.body;
+// --- INFOS UTILISATEUR & HISTORIQUE ---
+
+app.get("/api/user/:id", async (req, res) => {
   try {
-    if (type === "kyc") {
-      await User.findByIdAndUpdate(id, { kycStatus: status });
-    } else {
-      await Transaction.findByIdAndUpdate(id, { status: status });
-    }
-    res.json({ success: true });
+    const user = await User.findById(req.params.id).select("-password");
+    res.json(user);
   } catch (err) {
-    res.status(500).json({ error: "Erreur validation" });
+    res.status(404).json({ error: "Utilisateur non trouvé" });
   }
 });
-
-// --- HISTORIQUE ---
 
 app.get("/api/user/transactions/:userId", async (req, res) => {
   try {
@@ -245,5 +245,18 @@ app.get("/api/user/transactions/:userId", async (req, res) => {
   }
 });
 
+app.post("/api/user/submit-kyc", async (req, res) => {
+  const { userId, documentUrl } = req.body;
+  try {
+    await User.findByIdAndUpdate(userId, {
+      kycStatus: "en_attente",
+      documentUrl,
+    });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur KYC" });
+  }
+});
+
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🚀 Serveur actif sur le port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Serveur en ligne sur le port ${PORT}`));
