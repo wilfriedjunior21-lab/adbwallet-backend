@@ -94,27 +94,35 @@ app.post("/api/auth/login", async (req, res) => {
   res.json({ token, userId: user._id, role: user.role, name: user.name });
 });
 
-// --- ROUTES UTILISATEUR & KYC ---
+// --- ROUTES UTILISATEUR & SOLDE ---
 
 app.get("/api/user/:id", async (req, res) => {
-  const user = await User.findById(req.params.id).select("-password");
-  res.json(user);
+  try {
+    const user = await User.findById(req.params.id).select("-password");
+    res.json(user);
+  } catch (err) {
+    res.status(404).json({ error: "Utilisateur non trouvé" });
+  }
 });
 
-app.post("/api/user/submit-kyc", async (req, res) => {
-  const { userId, documentUrl } = req.body;
-  await User.findByIdAndUpdate(userId, {
-    kycDocUrl: documentUrl,
-    kycStatus: "en_attente",
-  });
-  res.json({ message: "KYC soumis" });
+app.get("/api/users/:id/balance", async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    res.json({ balance: user.balance || 0 });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur solde" });
+  }
 });
 
-// --- ROUTES ACTIONS (MARCHÉ & PROPOSITIONS) ---
+// --- ROUTES ACTIONS (MARCHÉ) ---
 
 app.get("/api/actions", async (req, res) => {
-  const actions = await Action.find({ status: "valide" });
-  res.json(actions);
+  try {
+    const actions = await Action.find({ status: "valide" });
+    res.json(actions);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur marché" });
+  }
 });
 
 app.post("/api/actions/propose", async (req, res) => {
@@ -136,81 +144,20 @@ app.post("/api/actions/propose", async (req, res) => {
   }
 });
 
-// --- ROUTES ADMIN ---
+// --- ROUTES TRANSACTIONS & WALLET ---
 
-app.get("/api/admin/users", async (req, res) => {
-  const users = await User.find().select("-password");
-  res.json(users);
-});
-
-app.patch("/api/admin/kyc/:id", async (req, res) => {
-  const { status } = req.body;
-  await User.findByIdAndUpdate(req.params.id, { kycStatus: status });
-  res.json({ message: "Statut KYC mis à jour" });
-});
-
-app.get("/api/admin/actions", async (req, res) => {
-  const actions = await Action.find().sort({ createdAt: -1 });
-  res.json(actions);
-});
-
-app.patch("/api/admin/actions/:id/validate", async (req, res) => {
-  await Action.findByIdAndUpdate(req.params.id, { status: "valide" });
-  res.json({ message: "Action publiée" });
-});
-
-// Nouvelle route : Liste des transactions pour l'admin
-app.get("/api/admin/transactions", async (req, res) => {
+// Route unifiée pour récupérer l'historique d'un utilisateur
+app.get("/api/transactions/user/:userId", async (req, res) => {
   try {
-    const transactions = await Transaction.find()
-      .populate("userId")
+    const transactions = await Transaction.find({ userId: req.params.userId })
+      .populate("actionId")
       .sort({ date: -1 });
     res.json(transactions);
   } catch (err) {
-    res.status(500).json({ error: "Erreur serveur" });
+    res.status(500).json({ error: "Erreur transactions" });
   }
 });
 
-// Nouvelle route : Valider un dépôt (Admin)
-app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
-  try {
-    const transaction = await Transaction.findById(req.params.id);
-    if (!transaction || transaction.status !== "en_attente") {
-      return res.status(400).json({ error: "Transaction invalide" });
-    }
-    transaction.status = "valide";
-    await transaction.save();
-    await User.findByIdAndUpdate(transaction.userId, {
-      $inc: { balance: transaction.amount },
-    });
-    res.json({ message: "Dépôt validé avec succès" });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur validation" });
-  }
-});
-
-// --- TRANSACTIONS ---
-
-app.get("/api/transactions/user/:userId", async (req, res) => {
-  const tx = await Transaction.find({ userId: req.params.userId }).populate(
-    "actionId"
-  );
-  res.json(tx);
-});
-
-// Nouvelle route : Historique complet (utilisé pour le Wallet)
-app.get("/api/transactions/history/:userId", async (req, res) => {
-  try {
-    const history = await Transaction.find({ userId: req.params.userId })
-      .populate("actionId")
-      .sort({ date: -1 });
-    res.json(history);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur historique" });
-  }
-});
-
-// Nouvelle route : Demande de dépôt
 app.post("/api/transactions/deposit", async (req, res) => {
   try {
     const { userId, amount } = req.body;
@@ -234,17 +181,14 @@ app.post("/api/transactions/buy", async (req, res) => {
     const user = await User.findById(userId);
     const action = await Action.findById(actionId);
 
-    if (!action || action.status !== "valide") {
+    if (!action || action.status !== "valide")
       return res.status(404).json({ error: "Action non disponible" });
-    }
 
     const totalCost = action.price * quantity;
-    if (user.balance < totalCost) {
+    if (user.balance < totalCost)
       return res.status(400).json({ error: "Solde insuffisant" });
-    }
-    if (action.availableQuantity < quantity) {
-      return res.status(400).json({ error: "Pas assez de parts disponibles" });
-    }
+    if (action.availableQuantity < quantity)
+      return res.status(400).json({ error: "Parts insuffisantes" });
 
     action.availableQuantity -= quantity;
     user.balance -= totalCost;
@@ -268,22 +212,18 @@ app.post("/api/transactions/buy", async (req, res) => {
   }
 });
 
-// 1. Récupérer les statistiques de vente pour l'actionnaire
+// --- ROUTES ACTIONNAIRE (STATS) ---
+
 app.get("/api/actionnaire/stats/:userId", async (req, res) => {
   try {
-    // Trouver toutes les actions créées par cet utilisateur
     const actions = await Action.find({ creatorId: req.params.userId });
     const actionIds = actions.map((a) => a._id);
-
-    // Calculer le total vendu via les transactions validées
     const transactions = await Transaction.find({
       actionId: { $in: actionIds },
       type: "achat",
       status: "valide",
     });
-
     const totalGagne = transactions.reduce((acc, curr) => acc + curr.amount, 0);
-
     res.json({
       totalGagne,
       nombreVentes: transactions.length,
@@ -294,12 +234,9 @@ app.get("/api/actionnaire/stats/:userId", async (req, res) => {
   }
 });
 
-// 2. Demander un retrait
 app.post("/api/transactions/withdraw", async (req, res) => {
   try {
     const { userId, amount } = req.body;
-
-    // On crée une transaction de type "retrait"
     const withdrawal = new Transaction({
       userId,
       amount,
@@ -307,15 +244,57 @@ app.post("/api/transactions/withdraw", async (req, res) => {
       status: "en_attente",
       date: new Date(),
     });
-
     await withdrawal.save();
-    res.status(201).json({ message: "Demande de retrait envoyée à l'admin." });
+    res.status(201).json({ message: "Demande de retrait envoyée" });
   } catch (err) {
     res.status(500).json({ error: "Erreur retrait" });
   }
 });
 
-// Valider un retrait (Admin)
+// --- ROUTES ADMIN ---
+
+app.get("/api/admin/users", async (req, res) => {
+  const users = await User.find().select("-password");
+  res.json(users);
+});
+
+app.get("/api/admin/actions", async (req, res) => {
+  const actions = await Action.find().sort({ createdAt: -1 });
+  res.json(actions);
+});
+
+app.patch("/api/admin/actions/:id/validate", async (req, res) => {
+  await Action.findByIdAndUpdate(req.params.id, { status: "valide" });
+  res.json({ message: "Action publiée" });
+});
+
+app.get("/api/admin/transactions", async (req, res) => {
+  try {
+    const transactions = await Transaction.find()
+      .populate("userId")
+      .sort({ date: -1 });
+    res.json(transactions);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
+  try {
+    const transaction = await Transaction.findById(req.params.id);
+    if (!transaction || transaction.status !== "en_attente")
+      return res.status(400).json({ error: "Transaction invalide" });
+    transaction.status = "valide";
+    await transaction.save();
+    await User.findByIdAndUpdate(transaction.userId, {
+      $inc: { balance: transaction.amount },
+    });
+    res.json({ message: "Dépôt validé" });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur validation" });
+  }
+});
+
 app.patch("/api/admin/transactions/:id/withdraw-confirm", async (req, res) => {
   try {
     const transaction = await Transaction.findById(req.params.id);
@@ -324,63 +303,13 @@ app.patch("/api/admin/transactions/:id/withdraw-confirm", async (req, res) => {
       transaction.status !== "en_attente" ||
       transaction.type !== "retrait"
     ) {
-      return res.status(400).json({ error: "Retrait invalide ou déjà traité" });
+      return res.status(400).json({ error: "Retrait invalide" });
     }
-
-    // On marque juste comme valide pour confirmer que l'admin a envoyé l'argent
     transaction.status = "valide";
     await transaction.save();
-
-    res.json({ message: "Retrait confirmé avec succès !" });
+    res.json({ message: "Retrait confirmé" });
   } catch (err) {
-    res
-      .status(500)
-      .json({ error: "Erreur lors de la confirmation du retrait" });
-  }
-});
-
-// --- ROUTES POUR LE DASHBOARD ACTIONNAIRE ---
-
-// 1. Récupérer les stats (Gains, nombre de ventes, etc.)
-app.get("/api/actionnaire/stats/:userId", async (req, res) => {
-  try {
-    const { userId } = req.params;
-
-    // Trouver les actions créées par cet utilisateur
-    const actions = await Action.find({ creatorId: userId });
-    const actionIds = actions.map((a) => a._id);
-
-    // Calculer les gains via les transactions validées de type "achat" sur ses actions
-    const transactions = await Transaction.find({
-      actionId: { $in: actionIds },
-      type: "achat",
-      status: "valide",
-    });
-
-    const totalGagne = transactions.reduce((acc, curr) => acc + curr.amount, 0);
-
-    res.json({
-      totalGagne,
-      nombreVentes: transactions.length,
-      actionsCount: actions.length,
-    });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur lors du calcul des statistiques" });
-  }
-});
-
-// 2. Récupérer l'historique des transactions d'un utilisateur (Retraits ou Achats)
-// Assure-toi que cette route existe car elle est utilisée pour le tableau de suivi
-app.get("/api/transactions/user/:userId", async (req, res) => {
-  try {
-    const transactions = await Transaction.find({
-      userId: req.params.userId,
-    }).sort({ date: -1 });
-    res.json(transactions);
-  } catch (err) {
-    res
-      .status(500)
-      .json({ error: "Erreur lors de la récupération des transactions" });
+    res.status(500).json({ error: "Erreur retrait" });
   }
 });
 
