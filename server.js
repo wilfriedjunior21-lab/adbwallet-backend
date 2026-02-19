@@ -98,14 +98,15 @@ app.post("/api/user/submit-kyc", async (req, res) => {
   }
 });
 
-// --- ROUTES ADMIN (CELLES QUI MANQUAIENT) ---
+// --- ROUTES ADMIN (VERSION CORRIGÉE) ---
 
 // 1. Récupérer tous les utilisateurs
 app.get("/api/admin/users", async (req, res) => {
   try {
     const users = await User.find().select("-password");
-    res.json(users);
+    res.status(200).json(users || []);
   } catch (err) {
+    console.error("Erreur GET /admin/users:", err);
     res
       .status(500)
       .json({ error: "Erreur lors de la récupération des utilisateurs" });
@@ -116,15 +117,22 @@ app.get("/api/admin/users", async (req, res) => {
 app.get("/api/admin/stats", async (req, res) => {
   try {
     const totalUsers = await User.countDocuments();
-    const totalBalance = await User.aggregate([
-      { $group: { _id: null, sum: { $sum: "$balance" } } },
+
+    // On calcule la somme manuellement ou via aggregate avec une sécurité
+    const stats = await User.aggregate([
+      { $group: { _id: null, total: { $sum: "$balance" } } },
     ]);
-    res.json({
-      totalUsers,
-      totalVolume: totalBalance[0]?.sum || 0,
+
+    const totalVolume = stats.length > 0 ? stats[0].total : 0;
+
+    res.status(200).json({
+      totalUsers: totalUsers || 0,
+      totalVolume: totalVolume || 0,
     });
   } catch (err) {
-    res.status(500).json({ error: "Erreur stats" });
+    console.error("Erreur GET /admin/stats:", err);
+    // On renvoie des valeurs par défaut au lieu d'une erreur 500 pour ne pas bloquer le front
+    res.json({ totalUsers: 0, totalVolume: 0 });
   }
 });
 
@@ -132,9 +140,17 @@ app.get("/api/admin/stats", async (req, res) => {
 app.post("/api/admin/verify-kyc", async (req, res) => {
   try {
     const { userId, status } = req.body;
-    await User.findByIdAndUpdate(userId, { kycStatus: status });
-    res.json({ message: "Statut mis à jour avec succès" });
+    if (!userId || !status) {
+      return res.status(400).json({ error: "Données manquantes" });
+    }
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { kycStatus: status },
+      { new: true }
+    );
+    res.json({ message: "Statut mis à jour", user: updatedUser });
   } catch (err) {
+    console.error("Erreur POST /verify-kyc:", err);
     res.status(500).json({ error: "Erreur lors de la validation" });
   }
 });
