@@ -268,6 +268,122 @@ app.post("/api/transactions/buy", async (req, res) => {
   }
 });
 
+// 1. Récupérer les statistiques de vente pour l'actionnaire
+app.get("/api/actionnaire/stats/:userId", async (req, res) => {
+  try {
+    // Trouver toutes les actions créées par cet utilisateur
+    const actions = await Action.find({ creatorId: req.params.userId });
+    const actionIds = actions.map((a) => a._id);
+
+    // Calculer le total vendu via les transactions validées
+    const transactions = await Transaction.find({
+      actionId: { $in: actionIds },
+      type: "achat",
+      status: "valide",
+    });
+
+    const totalGagne = transactions.reduce((acc, curr) => acc + curr.amount, 0);
+
+    res.json({
+      totalGagne,
+      nombreVentes: transactions.length,
+      actionsCount: actions.length,
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur statistiques" });
+  }
+});
+
+// 2. Demander un retrait
+app.post("/api/transactions/withdraw", async (req, res) => {
+  try {
+    const { userId, amount } = req.body;
+
+    // On crée une transaction de type "retrait"
+    const withdrawal = new Transaction({
+      userId,
+      amount,
+      type: "retrait",
+      status: "en_attente",
+      date: new Date(),
+    });
+
+    await withdrawal.save();
+    res.status(201).json({ message: "Demande de retrait envoyée à l'admin." });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur retrait" });
+  }
+});
+
+// Valider un retrait (Admin)
+app.patch("/api/admin/transactions/:id/withdraw-confirm", async (req, res) => {
+  try {
+    const transaction = await Transaction.findById(req.params.id);
+    if (
+      !transaction ||
+      transaction.status !== "en_attente" ||
+      transaction.type !== "retrait"
+    ) {
+      return res.status(400).json({ error: "Retrait invalide ou déjà traité" });
+    }
+
+    // On marque juste comme valide pour confirmer que l'admin a envoyé l'argent
+    transaction.status = "valide";
+    await transaction.save();
+
+    res.json({ message: "Retrait confirmé avec succès !" });
+  } catch (err) {
+    res
+      .status(500)
+      .json({ error: "Erreur lors de la confirmation du retrait" });
+  }
+});
+
+// --- ROUTES POUR LE DASHBOARD ACTIONNAIRE ---
+
+// 1. Récupérer les stats (Gains, nombre de ventes, etc.)
+app.get("/api/actionnaire/stats/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    // Trouver les actions créées par cet utilisateur
+    const actions = await Action.find({ creatorId: userId });
+    const actionIds = actions.map((a) => a._id);
+
+    // Calculer les gains via les transactions validées de type "achat" sur ses actions
+    const transactions = await Transaction.find({
+      actionId: { $in: actionIds },
+      type: "achat",
+      status: "valide",
+    });
+
+    const totalGagne = transactions.reduce((acc, curr) => acc + curr.amount, 0);
+
+    res.json({
+      totalGagne,
+      nombreVentes: transactions.length,
+      actionsCount: actions.length,
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur lors du calcul des statistiques" });
+  }
+});
+
+// 2. Récupérer l'historique des transactions d'un utilisateur (Retraits ou Achats)
+// Assure-toi que cette route existe car elle est utilisée pour le tableau de suivi
+app.get("/api/transactions/user/:userId", async (req, res) => {
+  try {
+    const transactions = await Transaction.find({
+      userId: req.params.userId,
+    }).sort({ date: -1 });
+    res.json(transactions);
+  } catch (err) {
+    res
+      .status(500)
+      .json({ error: "Erreur lors de la récupération des transactions" });
+  }
+});
+
 // --- LANCEMENT DU SERVEUR ---
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Serveur sur le port ${PORT}`));
