@@ -13,12 +13,17 @@ app.use(express.json());
 app.use(cors());
 
 // --- CONNEXION MONGODB ---
+// Empêche le buffering pour voir les erreurs de connexion immédiatement
+mongoose.set("bufferCommands", false);
+
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => console.log("✅ MongoDB connecté avec succès"))
   .catch((err) => console.error("❌ Erreur de connexion Mongo:", err));
 
-// --- MODÈLE UTILISATEUR ---
+// --- MODÈLES ---
+
+// 1. Modèle Utilisateur
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, required: true, unique: true },
@@ -40,40 +45,41 @@ const userSchema = new mongoose.Schema({
 
 const User = mongoose.model("User", userSchema);
 
+// 2. Modèle Action (Ce qui manquait pour le Dashboard)
+const actionSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  price: { type: Number, required: true },
+  totalQuantity: { type: Number, required: true },
+  availableQuantity: { type: Number, required: true },
+  description: String,
+  createdAt: { type: Date, default: Date.now },
+});
+
+const Action = mongoose.model("Action", actionSchema);
+
 // --- ROUTES AUTHENTIFICATION ---
 
-// Inscription
 app.post("/api/auth/register", async (req, res) => {
   try {
     const { name, email, password, role } = req.body;
-
-    // Vérifier si l'utilisateur existe déjà
-    const userExists = await User.findOne({ email });
-    if (userExists)
-      return res.status(400).json({ error: "Cet email est déjà utilisé" });
-
     const hashedPassword = await bcrypt.hash(password, 10);
     const newUser = new User({
       name,
-      email: email.toLowerCase().trim(),
+      email: email.toLowerCase(),
       password: hashedPassword,
-      role: role || "acheteur",
+      role,
     });
-
     await newUser.save();
-    res.status(201).json({ message: "Utilisateur créé avec succès" });
+    res.status(201).json({ message: "Utilisateur créé" });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Erreur lors de l'inscription" });
+    res.status(400).json({ error: "Erreur lors de l'inscription" });
   }
 });
 
-// Connexion
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { email, password } = req.body;
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
-
+    const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) return res.status(400).json({ error: "Utilisateur non trouvé" });
 
     const isMatch = await bcrypt.compare(password, user.password);
@@ -85,93 +91,100 @@ app.post("/api/auth/login", async (req, res) => {
       process.env.JWT_SECRET,
       { expiresIn: "1d" }
     );
-
-    res.json({
-      token,
-      userId: user._id,
-      role: user.role,
-      name: user.name,
-    });
+    res.json({ token, userId: user._id, role: user.role, name: user.name });
   } catch (err) {
-    res.status(500).json({ error: "Erreur serveur lors de la connexion" });
+    res.status(500).json({ error: "Erreur serveur" });
   }
 });
 
-// --- ROUTES UTILISATEUR (PROFIL) ---
+// --- ROUTES ACTIONS (DASHBOARD) ---
 
-// Récupérer un profil spécifique
+// Récupérer toutes les actions
+app.get("/api/actions", async (req, res) => {
+  try {
+    const actions = await Action.find().sort({ createdAt: -1 });
+    res.json(actions);
+  } catch (err) {
+    res
+      .status(500)
+      .json({ error: "Erreur lors de la récupération des actions" });
+  }
+});
+
+// --- ROUTES USER & KYC ---
+
 app.get("/api/user/:id", async (req, res) => {
   try {
     const user = await User.findById(req.params.id).select("-password");
-    if (!user)
-      return res.status(404).json({ error: "Utilisateur introuvable" });
     res.json(user);
   } catch (err) {
-    res.status(500).json({ error: "Erreur lors de la récupération du profil" });
+    res.status(404).json({ error: "Profil non trouvé" });
   }
 });
 
-// Soumettre le KYC (URL du document)
 app.post("/api/user/submit-kyc", async (req, res) => {
   try {
     const { userId, documentUrl } = req.body;
-    const updatedUser = await User.findByIdAndUpdate(
-      userId,
-      { kycStatus: "en_attente", kycDocument: documentUrl },
-      { new: true }
-    );
-    res.json({ message: "Documents KYC envoyés", user: updatedUser });
+    await User.findByIdAndUpdate(userId, {
+      kycStatus: "en_attente",
+      kycDocument: documentUrl,
+    });
+    res.json({ message: "KYC soumis" });
   } catch (err) {
-    res.status(500).json({ error: "Erreur lors de la soumission du KYC" });
+    res.status(500).json({ error: "Erreur KYC" });
   }
 });
 
-// --- ROUTES ADMIN (GESTION) ---
+// --- ROUTES ADMIN ---
 
-// 1. Récupérer tous les utilisateurs
 app.get("/api/admin/users", async (req, res) => {
   try {
-    const users = await User.find().select("-password").sort({ createdAt: -1 });
+    const users = await User.find().select("-password");
     res.json(users);
   } catch (err) {
-    console.error("Erreur Admin Users:", err);
-    res
-      .status(500)
-      .json({ error: "Erreur lors de la récupération de la liste" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
-// 2. Statistiques globales
 app.get("/api/admin/stats", async (req, res) => {
   try {
     const totalUsers = await User.countDocuments();
-    const balanceStats = await User.aggregate([
-      { $group: { _id: null, total: { $sum: "$balance" } } },
-    ]);
-
-    res.json({
-      totalUsers,
-      totalVolume: balanceStats.length > 0 ? balanceStats[0].total : 0,
-    });
+    const allUsers = await User.find({});
+    const totalVolume = allUsers.reduce((acc, u) => acc + (u.balance || 0), 0);
+    res.json({ totalUsers, totalVolume });
   } catch (err) {
-    console.error("Erreur Admin Stats:", err);
-    res.status(500).json({ error: "Erreur lors du calcul des stats" });
+    res.json({ totalUsers: 0, totalVolume: 0 });
   }
 });
 
-// 3. Valider / Rejeter le KYC d'un utilisateur
 app.post("/api/admin/verify-kyc", async (req, res) => {
   try {
-    const { userId, status } = req.body; // status attendu: "valide" ou "non_verifie"
+    const { userId, status } = req.body;
     await User.findByIdAndUpdate(userId, { kycStatus: status });
-    res.json({ message: `Statut KYC mis à jour vers: ${status}` });
+    res.json({ message: "Statut mis à jour" });
   } catch (err) {
-    res.status(500).json({ error: "Erreur lors de la mise à jour du KYC" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
-// --- DÉMARRAGE DU SERVEUR ---
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`🚀 Serveur démarré sur le port ${PORT}`);
+// Route pour créer une action de test (Utile pour remplir ton Dashboard)
+app.post("/api/admin/add-action", async (req, res) => {
+  try {
+    const { name, price, totalQuantity, description } = req.body;
+    const newAction = new Action({
+      name,
+      price,
+      totalQuantity,
+      availableQuantity: totalQuantity,
+      description,
+    });
+    await newAction.save();
+    res.status(201).json(newAction);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur création action" });
+  }
 });
+
+// --- DÉMARRAGE ---
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`🚀 Serveur démarré sur le port ${PORT}`));
