@@ -112,13 +112,11 @@ app.post("/api/user/submit-kyc", async (req, res) => {
 
 // --- ROUTES ACTIONS (MARCHÉ & PROPOSITIONS) ---
 
-// Marché public (uniquement les actions validées)
 app.get("/api/actions", async (req, res) => {
   const actions = await Action.find({ status: "valide" });
   res.json(actions);
 });
 
-// Proposition par un actionnaire
 app.post("/api/actions/propose", async (req, res) => {
   try {
     const { name, price, totalQuantity, description, creatorId } = req.body;
@@ -140,29 +138,55 @@ app.post("/api/actions/propose", async (req, res) => {
 
 // --- ROUTES ADMIN ---
 
-// Liste des utilisateurs pour l'admin
 app.get("/api/admin/users", async (req, res) => {
   const users = await User.find().select("-password");
   res.json(users);
 });
 
-// Validation KYC
 app.patch("/api/admin/kyc/:id", async (req, res) => {
   const { status } = req.body;
   await User.findByIdAndUpdate(req.params.id, { kycStatus: status });
   res.json({ message: "Statut KYC mis à jour" });
 });
 
-// Liste de TOUTES les actions pour l'admin
 app.get("/api/admin/actions", async (req, res) => {
   const actions = await Action.find().sort({ createdAt: -1 });
   res.json(actions);
 });
 
-// Validation d'une action par l'admin
 app.patch("/api/admin/actions/:id/validate", async (req, res) => {
   await Action.findByIdAndUpdate(req.params.id, { status: "valide" });
   res.json({ message: "Action publiée" });
+});
+
+// Nouvelle route : Liste des transactions pour l'admin
+app.get("/api/admin/transactions", async (req, res) => {
+  try {
+    const transactions = await Transaction.find()
+      .populate("userId")
+      .sort({ date: -1 });
+    res.json(transactions);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Nouvelle route : Valider un dépôt (Admin)
+app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
+  try {
+    const transaction = await Transaction.findById(req.params.id);
+    if (!transaction || transaction.status !== "en_attente") {
+      return res.status(400).json({ error: "Transaction invalide" });
+    }
+    transaction.status = "valide";
+    await transaction.save();
+    await User.findByIdAndUpdate(transaction.userId, {
+      $inc: { balance: transaction.amount },
+    });
+    res.json({ message: "Dépôt validé avec succès" });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur validation" });
+  }
 });
 
 // --- TRANSACTIONS ---
@@ -172,6 +196,76 @@ app.get("/api/transactions/user/:userId", async (req, res) => {
     "actionId"
   );
   res.json(tx);
+});
+
+// Nouvelle route : Historique complet (utilisé pour le Wallet)
+app.get("/api/transactions/history/:userId", async (req, res) => {
+  try {
+    const history = await Transaction.find({ userId: req.params.userId })
+      .populate("actionId")
+      .sort({ date: -1 });
+    res.json(history);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur historique" });
+  }
+});
+
+// Nouvelle route : Demande de dépôt
+app.post("/api/transactions/deposit", async (req, res) => {
+  try {
+    const { userId, amount } = req.body;
+    const deposit = new Transaction({
+      userId,
+      amount,
+      type: "depot",
+      status: "en_attente",
+      date: new Date(),
+    });
+    await deposit.save();
+    res.status(201).json({ message: "Demande de dépôt enregistrée" });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur dépôt" });
+  }
+});
+
+app.post("/api/transactions/buy", async (req, res) => {
+  const { userId, actionId, quantity } = req.body;
+  try {
+    const user = await User.findById(userId);
+    const action = await Action.findById(actionId);
+
+    if (!action || action.status !== "valide") {
+      return res.status(404).json({ error: "Action non disponible" });
+    }
+
+    const totalCost = action.price * quantity;
+    if (user.balance < totalCost) {
+      return res.status(400).json({ error: "Solde insuffisant" });
+    }
+    if (action.availableQuantity < quantity) {
+      return res.status(400).json({ error: "Pas assez de parts disponibles" });
+    }
+
+    action.availableQuantity -= quantity;
+    user.balance -= totalCost;
+
+    const transaction = new Transaction({
+      userId,
+      actionId,
+      quantity,
+      amount: totalCost,
+      type: "achat",
+      status: "valide",
+    });
+
+    await action.save();
+    await user.save();
+    await transaction.save();
+
+    res.json({ message: "Achat réussi !", newBalance: user.balance });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur lors de l'achat" });
+  }
 });
 
 // --- LANCEMENT DU SERVEUR ---

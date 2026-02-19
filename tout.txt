@@ -6,6 +6,12 @@ voice ce que je veux je veux qu'on fasse une application fintech ou comme tu le 
 les actions que les actionnaires inscrits publieront, et par derriere un admin qui controllera toutes les transactions qui se feront a l'interieur de lapplication, donc je veux que toutes les donnees sortes de la bases de donnee et que l'application soit parfaites je veux le frontend et le backend les donnees qui safficheront sur 
 le frontend doivent sortir de la base de donnee, les acheteurs auront une page principale ou ils verront leurs soldes et une pages ou ils verront lhistorique de leurs transactions
 
+
+
+voici maintenant pour adminpanel.jsx ajoute juste ce qu'il faut et redonne moi le code au complet stp je veux rien perdre
+
+
+
 https://vscode.dev/github/wilfriedjunior21-lab/adbwallet-backend/blob/main
 
 TrcaKxIUtH8xriSALUX91FAnAg-jcX18_vOeHudzc0ShxEDubOfR6rrG7a8NhD8V65n9D_X7fOTyHQRj6ijkyQ
