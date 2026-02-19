@@ -8,7 +8,8 @@ le frontend doivent sortir de la base de donnee, les acheteurs auront une page p
 
 
 
-voici maintenant pour adminpanel.jsx ajoute juste ce qu'il faut et redonne moi le code au complet stp je veux rien perdre
+
+voici mon dasboardacheteur.jsx donne moi le code complet sans enlever ou modifier les anciennes fonctionnalite stp je veux pas perdre cela
 
 
 
