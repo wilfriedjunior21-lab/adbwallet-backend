@@ -14,7 +14,7 @@ app.use(cors());
 const transporter = nodemailer.createTransport({
   service: "gmail", // Ou ton fournisseur (Outlook, Yahoo, etc.)
   auth: {
-    user: process.env.EMAIL_USER,
+    user: process.env.EMAIL_USER, 
     pass: process.env.EMAIL_PASS, // Pour Gmail, utilise un "Mot de passe d'application"
   },
 });
@@ -151,10 +151,10 @@ app.post("/api/auth/login", async (req, res) => {
 
     await transporter.sendMail(mailOptions);
 
-    res.json({
-      message: "Code envoyé par email",
-      requires2FA: true,
-      email: user.email,
+    res.json({ 
+      message: "Code envoyé par email", 
+      requires2FA: true, 
+      email: user.email 
     });
   } catch (err) {
     console.error("Erreur Login/SMTP:", err);
@@ -165,10 +165,10 @@ app.post("/api/auth/login", async (req, res) => {
 app.post("/api/auth/verify-2fa", async (req, res) => {
   const { email, code } = req.body;
   try {
-    const user = await User.findOne({
-      email,
-      otp: code,
-      otpExpires: { $gt: Date.now() },
+    const user = await User.findOne({ 
+      email, 
+      otp: code, 
+      otpExpires: { $gt: Date.now() } 
     });
 
     if (!user) {
