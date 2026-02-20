@@ -164,10 +164,13 @@ app.post("/api/transactions/monetbil/pay", async (req, res) => {
       res.status(400).json({ error: "Erreur initiation Monetbil" });
     }
   } catch (error) {
-    console.error("Monetbil Pay Error:", error);
-    res.status(500).json({ error: "Erreur service de paiement" });
-  }
-});
+  // Ceci affichera la réponse exacte envoyée par l'API Monetbil
+  console.error("Détails de l'erreur Monetbil:", error.response?.data || error.message);
+  res.status(500).json({ 
+    error: "Erreur service de paiement", 
+    details: error.response?.data 
+  });
+}
 
 app.post("/api/transactions/monetbil/callback", async (req, res) => {
   const { status, user, amount, transaction_id } = req.body;
