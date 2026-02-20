@@ -5,20 +5,11 @@ const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const nodemailer = require("nodemailer");
-const axios = require("axios"); // Ajouté pour Monetbil
+const axios = require("axios");
 
 const app = express();
 app.use(express.json());
 app.use(cors());
-
-// --- CONFIGURATION NODEMAILER ---
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
 
 // --- CONNEXION MONGODB ---
 mongoose
@@ -43,8 +34,7 @@ const userSchema = new mongoose.Schema({
     default: "non_verifie",
   },
   kycDocUrl: { type: String, default: "" },
-  otp: { type: String },
-  otpExpires: { type: Date },
+  // OTP supprimés du schéma pour alléger la base
 });
 
 const actionSchema = new mongoose.Schema({
@@ -77,7 +67,7 @@ const transactionSchema = new mongoose.Schema({
     default: "valide",
   },
   date: { type: Date, default: Date.now },
-  monetbilId: { type: String }, // Pour suivre les paiements Monetbil
+  monetbilId: { type: String },
 });
 
 const notificationSchema = new mongoose.Schema({
@@ -104,7 +94,7 @@ const createNotify = async (userId, title, message, type = "info") => {
   }
 };
 
-// --- ROUTES AUTHENTIFICATION ---
+// --- ROUTES AUTHENTIFICATION (SANS 2FA) ---
 
 app.post("/api/auth/register", async (req, res) => {
   try {
@@ -126,67 +116,24 @@ app.post("/api/auth/login", async (req, res) => {
       return res.status(400).json({ error: "Identifiants invalides" });
     }
 
-    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
-    user.otp = otpCode;
-    user.otpExpires = Date.now() + 10 * 60 * 1000;
-    await user.save();
+    // Génération immédiate du token JWT
+    const token = jwt.sign(
+      { id: user._id, role: user.role },
+      "SECRET_KEY", // Note: En prod, utilisez process.env.JWT_SECRET
+      { expiresIn: "1d" }
+    );
 
-    // LOG CONSOLE POUR DÉBOGAGE
-    console.log(`
-      -----------------------------------------
-      CODE OTP POUR : ${email}
-      CODE : ${otpCode}
-      -----------------------------------------
-    `);
-
-    const mailOptions = {
-      from: `"ADB WALLET Sécurité" <${process.env.EMAIL_USER}>`,
-      to: user.email,
-      subject: "Votre code de connexion ADB WALLET",
-      html: `
-        <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
-          <h2 style="color: #3b82f6;">Connexion ADB WALLET</h2>
-          <p>Voici votre code de sécurité pour accéder à votre compte :</p>
-          <div style="background: #f3f4f6; padding: 20px; border-radius: 10px; text-align: center; font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #1e293b;">
-            ${otpCode}
-          </div>
-        </div>
-      `,
-    };
-
-    // transporter.sendMail(mailOptions).catch(e => console.error("Erreur Mail:", e));
-
+    // Réponse directe avec les infos utilisateur
     res.json({
-      message: "Code envoyé",
-      requires2FA: true,
+      token,
+      userId: user._id,
+      role: user.role,
+      name: user.name,
       email: user.email,
+      message: "Connexion réussie",
     });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
-  }
-});
-
-app.post("/api/auth/verify-2fa", async (req, res) => {
-  const { email, code } = req.body;
-  try {
-    const user = await User.findOne({
-      email,
-      otp: code,
-      otpExpires: { $gt: Date.now() },
-    });
-
-    if (!user) return res.status(400).json({ error: "Code invalide" });
-
-    const token = jwt.sign({ id: user._id, role: user.role }, "SECRET_KEY", {
-      expiresIn: "1d",
-    });
-    user.otp = null;
-    user.otpExpires = null;
-    await user.save();
-
-    res.json({ token, userId: user._id, role: user.role, name: user.name });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
   }
 });
 
@@ -202,9 +149,9 @@ app.post("/api/transactions/monetbil/pay", async (req, res) => {
       item_name: `Dépôt Wallet - ${name}`,
       user: userId,
       email: email,
-      return_url: "http://localhost:3000/wallet", // À changer en prod
+      return_url: "http://localhost:3000/wallet",
       notify_url:
-        "https://adbwallet-backend.onrender.com/api/transactions/monetbil/callback", // Requis pour valider le solde
+        "https://adbwallet-backend.onrender.com/api/transactions/monetbil/callback",
     };
 
     const response = await axios.post(
@@ -222,21 +169,12 @@ app.post("/api/transactions/monetbil/pay", async (req, res) => {
   }
 });
 
-// WEBHOOK : Cette route reçoit la confirmation de Monetbil
 app.post("/api/transactions/monetbil/callback", async (req, res) => {
-  const { status, user, amount, transaction_id, operator_transaction_id } =
-    req.body;
-
-  console.log("CALLBACK MONETBIL REÇU:", req.body);
-
+  const { status, user, amount, transaction_id } = req.body;
   if (status === "success") {
     try {
       const amountNum = parseFloat(amount);
-
-      // 1. Créditer l'utilisateur
       await User.findByIdAndUpdate(user, { $inc: { balance: amountNum } });
-
-      // 2. Enregistrer la transaction comme valide
       const newTx = new Transaction({
         userId: user,
         amount: amountNum,
@@ -246,25 +184,21 @@ app.post("/api/transactions/monetbil/callback", async (req, res) => {
         date: new Date(),
       });
       await newTx.save();
-
-      // 3. Notifier l'utilisateur
       await createNotify(
         user,
         "Dépôt Réussi",
-        `Votre compte a été crédité de ${amountNum} F via Mobile Money.`,
+        `Compte crédité de ${amountNum} F.`,
         "success"
       );
-
       return res.status(200).send("OK");
     } catch (err) {
-      console.error("Erreur traitement callback:", err);
       return res.status(500).send("Erreur interne");
     }
   }
   res.status(200).send("Echec paiement");
 });
 
-// --- AUTRES ROUTES (Identiques à ton code) ---
+// --- AUTRES ROUTES ---
 
 app.get("/api/user/:id", async (req, res) => {
   try {
@@ -329,29 +263,6 @@ app.get("/api/transactions/user/:userId", async (req, res) => {
   }
 });
 
-app.post("/api/transactions/deposit", async (req, res) => {
-  try {
-    const { userId, amount } = req.body;
-    const deposit = new Transaction({
-      userId,
-      amount,
-      type: "depot",
-      status: "en_attente",
-      date: new Date(),
-    });
-    await deposit.save();
-    await createNotify(
-      userId,
-      "Dépôt en attente",
-      `Votre demande de ${amount} F est en cours.`,
-      "info"
-    );
-    res.status(201).json({ message: "Demande enregistrée" });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
 app.post("/api/transactions/buy", async (req, res) => {
   const { userId, actionId, quantity } = req.body;
   try {
@@ -392,49 +303,6 @@ app.post("/api/transactions/buy", async (req, res) => {
   }
 });
 
-app.post("/api/transactions/withdraw", async (req, res) => {
-  try {
-    const { userId, amount } = req.body;
-    const withdrawal = new Transaction({
-      userId,
-      amount,
-      type: "retrait",
-      status: "en_attente",
-      date: new Date(),
-    });
-    await withdrawal.save();
-    await createNotify(
-      userId,
-      "Demande de retrait",
-      `Demande de ${amount} F transmise.`,
-      "warning"
-    );
-    res.status(201).json({ message: "Demande envoyée" });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
-app.get("/api/actionnaire/stats/:userId", async (req, res) => {
-  try {
-    const actions = await Action.find({ creatorId: req.params.userId });
-    const actionIds = actions.map((a) => a._id);
-    const transactions = await Transaction.find({
-      actionId: { $in: actionIds },
-      type: "achat",
-      status: "valide",
-    });
-    const totalGagne = transactions.reduce((acc, curr) => acc + curr.amount, 0);
-    res.json({
-      totalGagne,
-      nombreVentes: transactions.length,
-      actionsCount: actions.length,
-    });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
 app.get("/api/notifications/:userId", async (req, res) => {
   try {
     const notifies = await Notification.find({ userId: req.params.userId })
@@ -457,6 +325,8 @@ app.patch("/api/notifications/mark-read", async (req, res) => {
     res.status(500).json({ error: "Erreur" });
   }
 });
+
+// --- ROUTES ADMIN ---
 
 app.get("/api/admin/users", async (req, res) => {
   const users = await User.find().select("-password");
@@ -508,52 +378,6 @@ app.get("/api/admin/transactions", async (req, res) => {
   }
 });
 
-app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
-  try {
-    const transaction = await Transaction.findById(req.params.id);
-    if (!transaction || transaction.status !== "en_attente")
-      return res.status(400).json({ error: "Invalide" });
-
-    transaction.status = "valide";
-    await transaction.save();
-    await User.findByIdAndUpdate(transaction.userId, {
-      $inc: { balance: transaction.amount },
-    });
-    await createNotify(
-      transaction.userId,
-      "Dépôt validé",
-      `Compte crédité de ${transaction.amount} F.`,
-      "success"
-    );
-    res.json({ message: "Dépôt validé" });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
-app.patch("/api/admin/transactions/:id/withdraw-confirm", async (req, res) => {
-  try {
-    const transaction = await Transaction.findById(req.params.id);
-    if (
-      !transaction ||
-      transaction.status !== "en_attente" ||
-      transaction.type !== "retrait"
-    )
-      return res.status(400).json({ error: "Invalide" });
-    transaction.status = "valide";
-    await transaction.save();
-    await createNotify(
-      transaction.userId,
-      "Retrait confirmé",
-      `Votre retrait de ${transaction.amount} F est approuvé.`,
-      "success"
-    );
-    res.json({ message: "Retrait confirmé" });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
 app.post("/api/admin/distribute-dividends", async (req, res) => {
   const { actionId, amountPerShare } = req.body;
   try {
@@ -564,8 +388,6 @@ app.post("/api/admin/distribute-dividends", async (req, res) => {
       type: "achat",
       status: "valide",
     });
-    if (purchases.length === 0)
-      return res.status(400).json({ message: "Aucun actionnaire" });
 
     const distributionPromises = purchases.map(async (tx) => {
       const dividendAmount = tx.quantity * amountPerShare;
