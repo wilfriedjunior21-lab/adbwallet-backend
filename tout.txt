@@ -11,7 +11,7 @@ le frontend doivent sortir de la base de donnee, les acheteurs auront une page p
 
 voici mon dasboardacheteur.jsx donne moi le code complet sans enlever ou modifier les anciennes fonctionnalite stp je veux pas perdre cela
 
-
+servicesecret=j1msLZWxiTrVTGN1HJWtiSJ38HHB4BDOWYkPOIdkDoyQxwIAUDTjxdAW0LtJbcAI
 
 https://vscode.dev/github/wilfriedjunior21-lab/adbwallet-backend/blob/main
 

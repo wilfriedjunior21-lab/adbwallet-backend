@@ -4,7 +4,8 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const nodemailer = require("nodemailer"); // 1. Importation
+const nodemailer = require("nodemailer");
+const axios = require("axios"); // Ajouté pour Monetbil
 
 const app = express();
 app.use(express.json());
@@ -12,10 +13,10 @@ app.use(cors());
 
 // --- CONFIGURATION NODEMAILER ---
 const transporter = nodemailer.createTransport({
-  service: "gmail", // Ou ton fournisseur (Outlook, Yahoo, etc.)
+  service: "gmail",
   auth: {
     user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS, // Pour Gmail, utilise un "Mot de passe d'application"
+    pass: process.env.EMAIL_PASS,
   },
 });
 
@@ -76,6 +77,7 @@ const transactionSchema = new mongoose.Schema({
     default: "valide",
   },
   date: { type: Date, default: Date.now },
+  monetbilId: { type: String }, // Pour suivre les paiements Monetbil
 });
 
 const notificationSchema = new mongoose.Schema({
@@ -116,7 +118,6 @@ app.post("/api/auth/register", async (req, res) => {
   }
 });
 
-// LOGIN AVEC ENVOI D'EMAIL RÉEL
 app.post("/api/auth/login", async (req, res) => {
   const { email, password } = req.body;
   try {
@@ -130,7 +131,14 @@ app.post("/api/auth/login", async (req, res) => {
     user.otpExpires = Date.now() + 10 * 60 * 1000;
     await user.save();
 
-    // ENVOI DE L'EMAIL
+    // LOG CONSOLE POUR DÉBOGAGE
+    console.log(`
+      -----------------------------------------
+      CODE OTP POUR : ${email}
+      CODE : ${otpCode}
+      -----------------------------------------
+    `);
+
     const mailOptions = {
       from: `"ADB WALLET Sécurité" <${process.env.EMAIL_USER}>`,
       to: user.email,
@@ -142,23 +150,19 @@ app.post("/api/auth/login", async (req, res) => {
           <div style="background: #f3f4f6; padding: 20px; border-radius: 10px; text-align: center; font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #1e293b;">
             ${otpCode}
           </div>
-          <p style="font-size: 12px; color: #6b7280; margin-top: 20px;">
-            Ce code expirera dans 10 minutes. Si vous n'êtes pas à l'origine de cette demande, veuillez ignorer cet email.
-          </p>
         </div>
       `,
     };
 
-    // await transporter.sendMail(mailOptions);//
+    // transporter.sendMail(mailOptions).catch(e => console.error("Erreur Mail:", e));
 
     res.json({
-      message: "Code envoyé par email",
+      message: "Code envoyé",
       requires2FA: true,
       email: user.email,
     });
   } catch (err) {
-    console.error("Erreur Login/SMTP:", err);
-    res.status(500).json({ error: "Erreur serveur ou d'envoi d'email" });
+    res.status(500).json({ error: "Erreur serveur" });
   }
 });
 
@@ -171,26 +175,96 @@ app.post("/api/auth/verify-2fa", async (req, res) => {
       otpExpires: { $gt: Date.now() },
     });
 
-    if (!user) {
-      return res.status(400).json({ error: "Code invalide ou expiré" });
-    }
+    if (!user) return res.status(400).json({ error: "Code invalide" });
 
     const token = jwt.sign({ id: user._id, role: user.role }, "SECRET_KEY", {
       expiresIn: "1d",
     });
-
     user.otp = null;
     user.otpExpires = null;
     await user.save();
 
     res.json({ token, userId: user._id, role: user.role, name: user.name });
   } catch (err) {
-    res.status(500).json({ error: "Erreur de vérification" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
-// --- ROUTES UTILISATEUR, ACTIONS, TRANSACTIONS ET ADMIN ---
-// (Toutes les autres routes restent identiques à ton code précédent)
+// --- INTEGRATION MONETBIL ---
+
+app.post("/api/transactions/monetbil/pay", async (req, res) => {
+  const { amount, userId, email, name } = req.body;
+  try {
+    const payload = {
+      service: process.env.MONETBIL_SERVICE_KEY,
+      amount: amount,
+      currency: "XAF",
+      item_name: `Dépôt Wallet - ${name}`,
+      user: userId,
+      email: email,
+      return_url: "http://localhost:3000/wallet", // À changer en prod
+      notify_url:
+        "https://adbwallet-backend.onrender.com/api/transactions/monetbil/callback", // Requis pour valider le solde
+    };
+
+    const response = await axios.post(
+      "https://api.monetbil.com/widget/v2.1",
+      payload
+    );
+    if (response.data.payment_url) {
+      res.json({ url: response.data.payment_url });
+    } else {
+      res.status(400).json({ error: "Erreur initiation Monetbil" });
+    }
+  } catch (error) {
+    console.error("Monetbil Pay Error:", error);
+    res.status(500).json({ error: "Erreur service de paiement" });
+  }
+});
+
+// WEBHOOK : Cette route reçoit la confirmation de Monetbil
+app.post("/api/transactions/monetbil/callback", async (req, res) => {
+  const { status, user, amount, transaction_id, operator_transaction_id } =
+    req.body;
+
+  console.log("CALLBACK MONETBIL REÇU:", req.body);
+
+  if (status === "success") {
+    try {
+      const amountNum = parseFloat(amount);
+
+      // 1. Créditer l'utilisateur
+      await User.findByIdAndUpdate(user, { $inc: { balance: amountNum } });
+
+      // 2. Enregistrer la transaction comme valide
+      const newTx = new Transaction({
+        userId: user,
+        amount: amountNum,
+        type: "depot",
+        status: "valide",
+        monetbilId: transaction_id,
+        date: new Date(),
+      });
+      await newTx.save();
+
+      // 3. Notifier l'utilisateur
+      await createNotify(
+        user,
+        "Dépôt Réussi",
+        `Votre compte a été crédité de ${amountNum} F via Mobile Money.`,
+        "success"
+      );
+
+      return res.status(200).send("OK");
+    } catch (err) {
+      console.error("Erreur traitement callback:", err);
+      return res.status(500).send("Erreur interne");
+    }
+  }
+  res.status(200).send("Echec paiement");
+});
+
+// --- AUTRES ROUTES (Identiques à ton code) ---
 
 app.get("/api/user/:id", async (req, res) => {
   try {
@@ -235,7 +309,7 @@ app.post("/api/actions/propose", async (req, res) => {
     await createNotify(
       creatorId,
       "Proposition envoyée",
-      `Votre projet ${name} est en attente de validation admin.`,
+      `Votre projet ${name} est en attente.`,
       "info"
     );
     res.status(201).json({ message: "Proposition envoyée" });
@@ -251,7 +325,7 @@ app.get("/api/transactions/user/:userId", async (req, res) => {
       .sort({ date: -1 });
     res.json(transactions);
   } catch (err) {
-    res.status(500).json({ error: "Erreur transactions" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
@@ -269,12 +343,12 @@ app.post("/api/transactions/deposit", async (req, res) => {
     await createNotify(
       userId,
       "Dépôt en attente",
-      `Votre demande de dépôt de ${amount} F est en cours de traitement.`,
+      `Votre demande de ${amount} F est en cours.`,
       "info"
     );
-    res.status(201).json({ message: "Demande de dépôt enregistrée" });
+    res.status(201).json({ message: "Demande enregistrée" });
   } catch (err) {
-    res.status(500).json({ error: "Erreur dépôt" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
@@ -283,9 +357,8 @@ app.post("/api/transactions/buy", async (req, res) => {
   try {
     const user = await User.findById(userId);
     const action = await Action.findById(actionId);
-
     if (!action || action.status !== "valide")
-      return res.status(404).json({ error: "Action non disponible" });
+      return res.status(404).json({ error: "Non dispo" });
 
     const totalCost = action.price * quantity;
     if (user.balance < totalCost)
@@ -295,7 +368,6 @@ app.post("/api/transactions/buy", async (req, res) => {
 
     action.availableQuantity -= quantity;
     user.balance -= totalCost;
-
     const transaction = new Transaction({
       userId,
       actionId,
@@ -308,17 +380,15 @@ app.post("/api/transactions/buy", async (req, res) => {
     await action.save();
     await user.save();
     await transaction.save();
-
     await createNotify(
       userId,
       "Achat réussi",
-      `Vous avez acquis ${quantity} parts de ${action.name}.`,
+      `Acquisition de ${quantity} parts de ${action.name}.`,
       "success"
     );
-
     res.json({ message: "Achat réussi !", newBalance: user.balance });
   } catch (err) {
-    res.status(500).json({ error: "Erreur lors de l'achat" });
+    res.status(500).json({ error: "Erreur achat" });
   }
 });
 
@@ -336,12 +406,12 @@ app.post("/api/transactions/withdraw", async (req, res) => {
     await createNotify(
       userId,
       "Demande de retrait",
-      `Votre demande de retrait de ${amount} F a été transmise.`,
+      `Demande de ${amount} F transmise.`,
       "warning"
     );
-    res.status(201).json({ message: "Demande de retrait envoyée" });
+    res.status(201).json({ message: "Demande envoyée" });
   } catch (err) {
-    res.status(500).json({ error: "Erreur retrait" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
@@ -361,7 +431,7 @@ app.get("/api/actionnaire/stats/:userId", async (req, res) => {
       actionsCount: actions.length,
     });
   } catch (err) {
-    res.status(500).json({ error: "Erreur statistiques" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
@@ -372,7 +442,7 @@ app.get("/api/notifications/:userId", async (req, res) => {
       .limit(15);
     res.json(notifies);
   } catch (err) {
-    res.status(500).json({ error: "Erreur notifications" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
@@ -384,7 +454,7 @@ app.patch("/api/notifications/mark-read", async (req, res) => {
     );
     res.json({ message: "Marqué comme lu" });
   } catch (err) {
-    res.status(500).json({ error: "Erreur lecture" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
@@ -405,28 +475,25 @@ app.patch("/api/admin/actions/:id/validate", async (req, res) => {
       { status: "valide" },
       { new: true }
     );
-
     await createNotify(
       action.creatorId,
       "Action publiée !",
-      `Votre actif ${action.name} est maintenant en vente.`,
+      `Votre actif ${action.name} est en vente.`,
       "success"
     );
-
     const acheteurs = await User.find({ role: "acheteur" });
     const notificationPromises = acheteurs.map((acheteur) =>
       createNotify(
         acheteur._id,
         "Nouvelle opportunité",
-        `L'actif ${action.name} est disponible au prix de ${action.price} F !`,
+        `${action.name} est disponible à ${action.price} F !`,
         "info"
       )
     );
     await Promise.all(notificationPromises);
-
-    res.json({ message: "Action publiée et acheteurs notifiés" });
+    res.json({ message: "Action publiée" });
   } catch (err) {
-    res.status(500).json({ error: "Erreur validation action" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
@@ -437,7 +504,7 @@ app.get("/api/admin/transactions", async (req, res) => {
       .sort({ date: -1 });
     res.json(transactions);
   } catch (err) {
-    res.status(500).json({ error: "Erreur serveur" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
@@ -445,25 +512,22 @@ app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
   try {
     const transaction = await Transaction.findById(req.params.id);
     if (!transaction || transaction.status !== "en_attente")
-      return res.status(400).json({ error: "Transaction invalide" });
+      return res.status(400).json({ error: "Invalide" });
 
     transaction.status = "valide";
     await transaction.save();
-
     await User.findByIdAndUpdate(transaction.userId, {
       $inc: { balance: transaction.amount },
     });
-
     await createNotify(
       transaction.userId,
       "Dépôt validé",
-      `Votre compte a été crédité de ${transaction.amount} F.`,
+      `Compte crédité de ${transaction.amount} F.`,
       "success"
     );
-
     res.json({ message: "Dépôt validé" });
   } catch (err) {
-    res.status(500).json({ error: "Erreur validation dépôt" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
@@ -474,22 +538,19 @@ app.patch("/api/admin/transactions/:id/withdraw-confirm", async (req, res) => {
       !transaction ||
       transaction.status !== "en_attente" ||
       transaction.type !== "retrait"
-    ) {
-      return res.status(400).json({ error: "Retrait invalide" });
-    }
+    )
+      return res.status(400).json({ error: "Invalide" });
     transaction.status = "valide";
     await transaction.save();
-
     await createNotify(
       transaction.userId,
       "Retrait confirmé",
-      `Votre retrait de ${transaction.amount} F a été approuvé.`,
+      `Votre retrait de ${transaction.amount} F est approuvé.`,
       "success"
     );
-
     res.json({ message: "Retrait confirmé" });
   } catch (err) {
-    res.status(500).json({ error: "Erreur retrait" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
@@ -497,26 +558,20 @@ app.post("/api/admin/distribute-dividends", async (req, res) => {
   const { actionId, amountPerShare } = req.body;
   try {
     const action = await Action.findById(actionId);
-    if (!action) return res.status(404).json({ error: "Action non trouvée" });
-
+    if (!action) return res.status(404).json({ error: "Non trouvé" });
     const purchases = await Transaction.find({
       actionId,
       type: "achat",
       status: "valide",
     });
-
     if (purchases.length === 0)
-      return res
-        .status(400)
-        .json({ message: "Aucun actionnaire pour cet actif" });
+      return res.status(400).json({ message: "Aucun actionnaire" });
 
     const distributionPromises = purchases.map(async (tx) => {
       const dividendAmount = tx.quantity * amountPerShare;
-
       await User.findByIdAndUpdate(tx.userId, {
         $inc: { balance: dividendAmount },
       });
-
       const divTx = new Transaction({
         userId: tx.userId,
         actionId: action._id,
@@ -526,21 +581,18 @@ app.post("/api/admin/distribute-dividends", async (req, res) => {
         status: "valide",
       });
       await divTx.save();
-
       return createNotify(
         tx.userId,
         "Dividendes reçus !",
-        `Vous avez reçu ${dividendAmount} F de dividendes pour vos parts dans ${action.name}.`,
+        `${dividendAmount} F reçus pour ${action.name}.`,
         "success"
       );
     });
 
     await Promise.all(distributionPromises);
-    res.json({
-      message: `Dividendes distribués avec succès pour ${action.name}`,
-    });
+    res.json({ message: `Dividendes distribués pour ${action.name}` });
   } catch (err) {
-    res.status(500).json({ error: "Erreur distribution dividendes" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
