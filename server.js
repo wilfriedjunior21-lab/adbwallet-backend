@@ -149,7 +149,7 @@ app.post("/api/auth/login", async (req, res) => {
       `,
     };
 
-    await transporter.sendMail(mailOptions);
+    // await transporter.sendMail(mailOptions);//
 
     res.json({
       message: "Code envoyé par email",
