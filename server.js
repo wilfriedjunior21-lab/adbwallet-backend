@@ -163,29 +163,25 @@ app.post("/api/auth/login", async (req, res) => {
 app.post("/api/transactions/mtn/pay", async (req, res) => {
   const { amount, phone, userId } = req.body;
   const referenceId = uuidv4();
-
-  // Nettoyage du numéro : enlever le + ou les espaces
   const cleanPhone = phone.replace(/\D/g, "");
-  // --- PLACE LES LOGS ICI POUR TESTER ---
-  console.log("--- DEBUG MTN ---");
-  console.log("Clé Primaire (Env):", process.env.MTN_PRIMARY_KEY);
-  console.log("Clé Primaire (Config):", mtnConfig.primaryKey);
-  console.log("Environnement:", mtnConfig.env);
-  console.log("-----------------");
+
+  console.log("--- TENTATIVE DE PAIEMENT ---");
+  console.log("Montant:", amount, "Téléphone:", cleanPhone);
 
   try {
     const token = await getMTNToken();
+    console.log("✅ Token obtenu avec succès");
 
     const payload = {
       amount: amount.toString(),
-      currency: "EUR", // EUR en Sandbox uniquement
+      currency: "EUR", // Garde EUR pour la Sandbox
       externalId: "ADB" + Date.now(),
       payer: { partyIdType: "MSISDN", partyId: cleanPhone },
       payerMessage: "Depot ADB Wallet",
       payeeNote: "Investissement",
     };
 
-    await axios.post(
+    const response = await axios.post(
       `${mtnConfig.baseUrl}/collection/v1_0/requesttopay`,
       payload,
       {
@@ -199,6 +195,8 @@ app.post("/api/transactions/mtn/pay", async (req, res) => {
       }
     );
 
+    console.log("✅ Réponse MTN (Code HTTP):", response.status);
+
     const newTx = new Transaction({
       userId,
       amount: Number(amount),
@@ -208,23 +206,23 @@ app.post("/api/transactions/mtn/pay", async (req, res) => {
     });
     await newTx.save();
 
-    res.json({
-      message: "Veuillez valider le paiement sur votre mobile",
-      referenceId,
-    });
+    res.json({ message: "Veuillez valider le paiement", referenceId });
   } catch (error) {
-    // Log détaillé pour voir la cause exacte dans ton terminal
-    console.error(
-      "❌ Erreur MTN Pay Detail:",
-      error.response?.data || error.message
-    );
+    console.log("❌ ERREUR DETECTÉE !");
+    if (error.response) {
+      // C'est ici que MTN nous dit pourquoi il rejette
+      console.log("Données de l'erreur:", JSON.stringify(error.response.data));
+      console.log("Statut de l'erreur:", error.response.status);
+    } else {
+      console.log("Message d'erreur:", error.message);
+    }
+
     res.status(500).json({
-      error: "Erreur lors de l'initiation du paiement MTN",
-      debug: error.response?.data || error.message,
+      error: "Rejeté par MTN",
+      details: error.response ? error.response.data : error.message,
     });
   }
 });
-
 app.get("/api/transactions/mtn/status/:referenceId", async (req, res) => {
   try {
     const token = await getMTNToken();
