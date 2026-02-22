@@ -314,10 +314,10 @@ app.get("/api/transactions/user/:userId", async (req, res) => {
   }
 });
 
-// --- ROUTE ACHAT (LOGIQUE D'EXCHANGE AJOUTÉE) ---
+// --- ROUTE ACHAT (LOGIQUE D'EXCHANGE) ---
 app.post("/api/transactions/buy", async (req, res) => {
   const { userId, actionId, quantity } = req.body;
-  const session = await mongoose.startSession(); // Utilisation d'une session pour garantir l'intégrité
+  const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
@@ -329,7 +329,7 @@ app.post("/api/transactions/buy", async (req, res) => {
     }
 
     const totalCost = action.price * quantity;
-    const sellerId = action.creatorId; // C'est l'actionnaire qui reçoit l'argent
+    const sellerId = action.creatorId;
 
     if (user.balance < totalCost) {
       throw new Error("Solde insuffisant");
@@ -350,7 +350,6 @@ app.post("/api/transactions/buy", async (req, res) => {
         { session }
       );
 
-      // Notification pour le vendeur
       await createNotify(
         sellerId,
         "Vente réussie !",
@@ -358,7 +357,6 @@ app.post("/api/transactions/buy", async (req, res) => {
         "success"
       );
 
-      // Enregistrer la transaction côté vendeur
       const sellerTx = new Transaction({
         userId: sellerId,
         actionId,
@@ -385,7 +383,6 @@ app.post("/api/transactions/buy", async (req, res) => {
     });
     await buyerTx.save({ session });
 
-    // 5. Notification acheteur
     await createNotify(
       userId,
       "Achat réussi",
@@ -400,6 +397,51 @@ app.post("/api/transactions/buy", async (req, res) => {
     res.status(500).json({ error: err.message || "Erreur achat" });
   } finally {
     session.endSession();
+  }
+});
+
+// --- NOUVELLE ROUTE : RETRAIT POUR ACTIONNAIRE ---
+app.post("/api/transactions/withdraw", async (req, res) => {
+  const { userId, amount } = req.body;
+  try {
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+
+    // Vérification du solde
+    if (user.balance < amount) {
+      return res
+        .status(400)
+        .json({ error: "Solde insuffisant pour ce retrait" });
+    }
+
+    // Débit immédiat du solde pour "bloquer" les fonds
+    user.balance -= Number(amount);
+    await user.save();
+
+    // Création de la transaction de retrait en attente de validation admin
+    const withdrawTx = new Transaction({
+      userId,
+      amount: Number(amount),
+      type: "retrait",
+      status: "en_attente",
+    });
+    await withdrawTx.save();
+
+    // Notification
+    await createNotify(
+      userId,
+      "Demande de retrait",
+      `Votre demande de ${amount} F est en cours de traitement par l'administration.`,
+      "info"
+    );
+
+    res.json({
+      message: "Demande de retrait enregistrée",
+      newBalance: user.balance,
+    });
+  } catch (err) {
+    console.error("Erreur retrait:", err);
+    res.status(500).json({ error: "Erreur serveur lors du retrait" });
   }
 });
 
@@ -530,19 +572,36 @@ app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
     tx.status = "valide";
     await tx.save();
 
-    const user = await User.findByIdAndUpdate(
-      tx.userId,
-      { $inc: { balance: tx.amount } },
-      { new: true }
-    );
+    // On ne crédite que si c'est un dépôt.
+    // Pour un retrait, le débit a déjà été fait à la création de la demande.
+    if (tx.type === "depot") {
+      const user = await User.findByIdAndUpdate(
+        tx.userId,
+        { $inc: { balance: tx.amount } },
+        { new: true }
+      );
+    }
 
     res.json({
-      message: "Transaction validée et solde mis à jour",
+      message: "Transaction validée avec succès",
       transaction: tx,
-      newBalance: user.balance,
     });
   } catch (error) {
     res.status(500).json({ error: "Erreur serveur lors de la validation" });
+  }
+});
+
+app.patch("/api/actions/:id", async (req, res) => {
+  try {
+    const { price, description } = req.body;
+    const updatedAction = await Action.findByIdAndUpdate(
+      req.params.id,
+      { price: Number(price), description },
+      { new: true }
+    );
+    res.json(updatedAction);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur lors de la mise à jour de l'actif" });
   }
 });
 
