@@ -5,7 +5,7 @@ const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
-const { v4: uuidv4 } = require("uuid"); // Nécessaire pour MTN
+const { v4: uuidv4 } = require("uuid");
 
 const app = express();
 app.use(express.json());
@@ -66,7 +66,7 @@ const transactionSchema = new mongoose.Schema({
     default: "valide",
   },
   date: { type: Date, default: Date.now },
-  referenceId: { type: String }, // Utilisé pour le suivi MTN
+  referenceId: { type: String },
 });
 
 const notificationSchema = new mongoose.Schema({
@@ -102,7 +102,6 @@ const mtnConfig = {
   baseUrl: "https://sandbox.momodeveloper.mtn.com",
 };
 
-// Utilitaire pour obtenir le Token d'accès MTN (expire après 1h)
 const getMTNToken = async () => {
   const auth = Buffer.from(`${mtnConfig.apiUser}:${mtnConfig.apiKey}`).toString(
     "base64"
@@ -159,20 +158,23 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-// --- INTEGRATION NOUVELLE : MTN MOMO PAY ---
+// --- INTEGRATION MTN MOMO PAY (CORRIGÉE) ---
 
 app.post("/api/transactions/mtn/pay", async (req, res) => {
   const { amount, phone, userId } = req.body;
   const referenceId = uuidv4();
+
+  // Nettoyage du numéro : enlever le + ou les espaces
+  const cleanPhone = phone.replace(/\D/g, "");
 
   try {
     const token = await getMTNToken();
 
     const payload = {
       amount: amount.toString(),
-      currency: "EUR", // "EUR" obligatoire en Sandbox, change en "XAF" en production
+      currency: "EUR", // EUR en Sandbox uniquement
       externalId: "ADB" + Date.now(),
-      payer: { partyIdType: "MSISDN", partyId: phone },
+      payer: { partyIdType: "MSISDN", partyId: cleanPhone },
       payerMessage: "Depot ADB Wallet",
       payeeNote: "Investissement",
     };
@@ -191,10 +193,9 @@ app.post("/api/transactions/mtn/pay", async (req, res) => {
       }
     );
 
-    // Création de la transaction en attente
     const newTx = new Transaction({
       userId,
-      amount,
+      amount: Number(amount),
       type: "depot",
       status: "en_attente",
       referenceId: referenceId,
@@ -206,14 +207,18 @@ app.post("/api/transactions/mtn/pay", async (req, res) => {
       referenceId,
     });
   } catch (error) {
-    console.error("Erreur MTN Pay:", error.response?.data || error.message);
-    res
-      .status(500)
-      .json({ error: "Erreur lors de l'initiation du paiement MTN" });
+    // Log détaillé pour voir la cause exacte dans ton terminal
+    console.error(
+      "❌ Erreur MTN Pay Detail:",
+      error.response?.data || error.message
+    );
+    res.status(500).json({
+      error: "Erreur lors de l'initiation du paiement MTN",
+      debug: error.response?.data || error.message,
+    });
   }
 });
 
-// Route pour vérifier si le paiement a été validé (Polling)
 app.get("/api/transactions/mtn/status/:referenceId", async (req, res) => {
   try {
     const token = await getMTNToken();
@@ -230,7 +235,7 @@ app.get("/api/transactions/mtn/status/:referenceId", async (req, res) => {
       }
     );
 
-    const status = response.data.status; // ex: PENDING, SUCCESSFUL, FAILED
+    const status = response.data.status;
 
     if (status === "SUCCESSFUL") {
       const tx = await Transaction.findOne({
@@ -254,11 +259,15 @@ app.get("/api/transactions/mtn/status/:referenceId", async (req, res) => {
 
     res.json({ status });
   } catch (error) {
+    console.error(
+      "Erreur Check Status:",
+      error.response?.data || error.message
+    );
     res.status(500).json({ error: "Erreur lors de la vérification du statut" });
   }
 });
 
-// --- AUTRES ROUTES (INCHANGÉES) ---
+// --- AUTRES ROUTES (CONSERVÉES À 100%) ---
 
 app.get("/api/user/:id", async (req, res) => {
   try {
