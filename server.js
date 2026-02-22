@@ -193,7 +193,7 @@ app.post("/api/transactions/mtn/pay", async (req, res) => {
           Authorization: `Bearer ${token}`,
           "X-Reference-Id": referenceId,
           "X-Target-Environment": mtnConfig.env,
-          "Ocp-Apim-Subscription-Key": 6c052fabcf2f4dbba1dd1c64003cee61,
+          "Ocp-Apim-Subscription-Key": mtnConfig.primaryKey,
           "Content-Type": "application/json",
         },
       }
