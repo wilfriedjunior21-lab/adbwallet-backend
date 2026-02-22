@@ -4,8 +4,8 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const nodemailer = require("nodemailer");
 const axios = require("axios");
+const { v4: uuidv4 } = require("uuid"); // Nécessaire pour MTN
 
 const app = express();
 app.use(express.json());
@@ -34,7 +34,6 @@ const userSchema = new mongoose.Schema({
     default: "non_verifie",
   },
   kycDocUrl: { type: String, default: "" },
-  // OTP supprimés du schéma pour alléger la base
 });
 
 const actionSchema = new mongoose.Schema({
@@ -67,7 +66,7 @@ const transactionSchema = new mongoose.Schema({
     default: "valide",
   },
   date: { type: Date, default: Date.now },
-  monetbilId: { type: String },
+  referenceId: { type: String }, // Utilisé pour le suivi MTN
 });
 
 const notificationSchema = new mongoose.Schema({
@@ -94,7 +93,34 @@ const createNotify = async (userId, title, message, type = "info") => {
   }
 };
 
-// --- ROUTES AUTHENTIFICATION (SANS 2FA) ---
+// --- CONFIGURATION MTN MOMO ---
+const mtnConfig = {
+  primaryKey: process.env.MTN_PRIMARY_KEY,
+  apiUser: process.env.MTN_API_USER,
+  apiKey: process.env.MTN_API_KEY,
+  env: process.env.MTN_ENVIRONMENT || "sandbox",
+  baseUrl: "https://sandbox.momodeveloper.mtn.com",
+};
+
+// Utilitaire pour obtenir le Token d'accès MTN (expire après 1h)
+const getMTNToken = async () => {
+  const auth = Buffer.from(`${mtnConfig.apiUser}:${mtnConfig.apiKey}`).toString(
+    "base64"
+  );
+  const response = await axios.post(
+    `${mtnConfig.baseUrl}/collection/token/`,
+    {},
+    {
+      headers: {
+        Authorization: `Basic ${auth}`,
+        "Ocp-Apim-Subscription-Key": mtnConfig.primaryKey,
+      },
+    }
+  );
+  return response.data.access_token;
+};
+
+// --- ROUTES AUTHENTIFICATION ---
 
 app.post("/api/auth/register", async (req, res) => {
   try {
@@ -115,15 +141,11 @@ app.post("/api/auth/login", async (req, res) => {
     if (!user || !(await bcrypt.compare(password, user.password))) {
       return res.status(400).json({ error: "Identifiants invalides" });
     }
-
-    // Génération immédiate du token JWT
     const token = jwt.sign(
       { id: user._id, role: user.role },
-      "SECRET_KEY", // Note: En prod, utilisez process.env.JWT_SECRET
+      process.env.JWT_SECRET || "SECRET_KEY",
       { expiresIn: "1d" }
     );
-
-    // Réponse directe avec les infos utilisateur
     res.json({
       token,
       userId: user._id,
@@ -137,68 +159,106 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-// --- INTEGRATION MONETBIL ---
+// --- INTEGRATION NOUVELLE : MTN MOMO PAY ---
 
-app.post("/api/transactions/monetbil/pay", async (req, res) => {
-  const { amount, userId, email, name } = req.body;
+app.post("/api/transactions/mtn/pay", async (req, res) => {
+  const { amount, phone, userId } = req.body;
+  const referenceId = uuidv4();
+
   try {
+    const token = await getMTNToken();
+
     const payload = {
-      service: process.env.MONETBIL_SERVICE_KEY,
-      amount: amount,
-      currency: "XAF",
-      item_name: `Dépôt Wallet - ${name}`,
-      user: userId,
-      email: email,
-      return_url: "http://localhost:3000/wallet",
-      notify_url:
-        "https://adbwallet-backend.onrender.com/api/transactions/monetbil/callback",
+      amount: amount.toString(),
+      currency: "EUR", // "EUR" obligatoire en Sandbox, change en "XAF" en production
+      externalId: "ADB" + Date.now(),
+      payer: { partyIdType: "MSISDN", partyId: phone },
+      payerMessage: "Depot ADB Wallet",
+      payeeNote: "Investissement",
     };
 
-    const response = await axios.post(
-      "https://api.monetbil.com/widget/v2.1",
-      payload
+    await axios.post(
+      `${mtnConfig.baseUrl}/collection/v1_0/requesttopay`,
+      payload,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "X-Reference-Id": referenceId,
+          "X-Target-Environment": mtnConfig.env,
+          "Ocp-Apim-Subscription-Key": mtnConfig.primaryKey,
+          "Content-Type": "application/json",
+        },
+      }
     );
-    if (response.data.payment_url) {
-      res.json({ url: response.data.payment_url });
-    } else {
-      res.status(400).json({ error: "Erreur initiation Monetbil" });
-    }
+
+    // Création de la transaction en attente
+    const newTx = new Transaction({
+      userId,
+      amount,
+      type: "depot",
+      status: "en_attente",
+      referenceId: referenceId,
+    });
+    await newTx.save();
+
+    res.json({
+      message: "Veuillez valider le paiement sur votre mobile",
+      referenceId,
+    });
   } catch (error) {
-    console.error("Monetbil Pay Error:", error);
-    res.status(500).json({ error: "Erreur service de paiement" });
+    console.error("Erreur MTN Pay:", error.response?.data || error.message);
+    res
+      .status(500)
+      .json({ error: "Erreur lors de l'initiation du paiement MTN" });
   }
 });
 
-app.post("/api/transactions/monetbil/callback", async (req, res) => {
-  const { status, user, amount, transaction_id } = req.body;
-  if (status === "success") {
-    try {
-      const amountNum = parseFloat(amount);
-      await User.findByIdAndUpdate(user, { $inc: { balance: amountNum } });
-      const newTx = new Transaction({
-        userId: user,
-        amount: amountNum,
-        type: "depot",
-        status: "valide",
-        monetbilId: transaction_id,
-        date: new Date(),
+// Route pour vérifier si le paiement a été validé (Polling)
+app.get("/api/transactions/mtn/status/:referenceId", async (req, res) => {
+  try {
+    const token = await getMTNToken();
+    const { referenceId } = req.params;
+
+    const response = await axios.get(
+      `${mtnConfig.baseUrl}/collection/v1_0/requesttopay/${referenceId}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "X-Target-Environment": mtnConfig.env,
+          "Ocp-Apim-Subscription-Key": mtnConfig.primaryKey,
+        },
+      }
+    );
+
+    const status = response.data.status; // ex: PENDING, SUCCESSFUL, FAILED
+
+    if (status === "SUCCESSFUL") {
+      const tx = await Transaction.findOne({
+        referenceId,
+        status: "en_attente",
       });
-      await newTx.save();
-      await createNotify(
-        user,
-        "Dépôt Réussi",
-        `Compte crédité de ${amountNum} F.`,
-        "success"
-      );
-      return res.status(200).send("OK");
-    } catch (err) {
-      return res.status(500).send("Erreur interne");
+      if (tx) {
+        tx.status = "valide";
+        await tx.save();
+        await User.findByIdAndUpdate(tx.userId, {
+          $inc: { balance: tx.amount },
+        });
+        await createNotify(
+          tx.userId,
+          "Dépôt Réussi",
+          `Votre compte a été crédité de ${tx.amount} F.`,
+          "success"
+        );
+      }
     }
+
+    res.json({ status });
+  } catch (error) {
+    res.status(500).json({ error: "Erreur lors de la vérification du statut" });
   }
-  res.status(200).send("Echec paiement");
 });
 
-// --- AUTRES ROUTES ---
+// --- AUTRES ROUTES (INCHANGÉES) ---
 
 app.get("/api/user/:id", async (req, res) => {
   try {
