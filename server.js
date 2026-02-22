@@ -166,6 +166,12 @@ app.post("/api/transactions/mtn/pay", async (req, res) => {
 
   // Nettoyage du numéro : enlever le + ou les espaces
   const cleanPhone = phone.replace(/\D/g, "");
+  // --- PLACE LES LOGS ICI POUR TESTER ---
+  console.log("--- DEBUG MTN ---");
+  console.log("Clé Primaire (Env):", process.env.MTN_PRIMARY_KEY);
+  console.log("Clé Primaire (Config):", mtnConfig.primaryKey);
+  console.log("Environnement:", mtnConfig.env);
+  console.log("-----------------");
 
   try {
     const token = await getMTNToken();
