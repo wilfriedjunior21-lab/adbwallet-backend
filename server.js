@@ -95,10 +95,10 @@ const createNotify = async (userId, title, message, type = "info") => {
 
 // --- CONFIGURATION MTN MOMO ---
 const mtnConfig = {
-  primaryKey: process.env.MTN_PRIMARY_KEY,
-  apiUser: process.env.MTN_API_USER,
-  apiKey: process.env.MTN_API_KEY,
-  env: process.env.MTN_ENVIRONMENT || "sandbox",
+  primaryKey: "8cc21d360efb40cfb4ef57d90bbb5e51",
+  apiUser: "5f04e913-c740-470f-8d70-a0f7eabd3642",
+  apiKey: "6b3d3a94a7ee4f33b8e19e963d957fb0",
+  env: "sandbox",
   baseUrl: "https://sandbox.momodeveloper.mtn.com",
 };
 
