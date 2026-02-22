@@ -158,30 +158,25 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-// --- INTEGRATION MTN MOMO PAY (CORRIGÉE) ---
+// --- INTEGRATION MTN MOMO PAY ---
 
 app.post("/api/transactions/mtn/pay", async (req, res) => {
   const { amount, phone, userId } = req.body;
   const referenceId = uuidv4();
   const cleanPhone = phone.replace(/\D/g, "");
 
-  console.log("--- TENTATIVE DE PAIEMENT ---");
-  console.log("Montant:", amount, "Téléphone:", cleanPhone);
-
   try {
     const token = await getMTNToken();
-    console.log("✅ Token obtenu avec succès");
-
     const payload = {
       amount: amount.toString(),
-      currency: "EUR", // Garde EUR pour la Sandbox
+      currency: "EUR",
       externalId: "ADB" + Date.now(),
       payer: { partyIdType: "MSISDN", partyId: cleanPhone },
       payerMessage: "Depot ADB Wallet",
       payeeNote: "Investissement",
     };
 
-    const response = await axios.post(
+    await axios.post(
       `${mtnConfig.baseUrl}/collection/v1_0/requesttopay`,
       payload,
       {
@@ -195,8 +190,6 @@ app.post("/api/transactions/mtn/pay", async (req, res) => {
       }
     );
 
-    console.log("✅ Réponse MTN (Code HTTP):", response.status);
-
     const newTx = new Transaction({
       userId,
       amount: Number(amount),
@@ -208,21 +201,10 @@ app.post("/api/transactions/mtn/pay", async (req, res) => {
 
     res.json({ message: "Veuillez valider le paiement", referenceId });
   } catch (error) {
-    console.log("❌ ERREUR DETECTÉE !");
-    if (error.response) {
-      // C'est ici que MTN nous dit pourquoi il rejette
-      console.log("Données de l'erreur:", JSON.stringify(error.response.data));
-      console.log("Statut de l'erreur:", error.response.status);
-    } else {
-      console.log("Message d'erreur:", error.message);
-    }
-
-    res.status(500).json({
-      error: "Rejeté par MTN",
-      details: error.response ? error.response.data : error.message,
-    });
+    res.status(500).json({ error: "Rejeté par MTN" });
   }
 });
+
 app.get("/api/transactions/mtn/status/:referenceId", async (req, res) => {
   try {
     const token = await getMTNToken();
@@ -263,15 +245,11 @@ app.get("/api/transactions/mtn/status/:referenceId", async (req, res) => {
 
     res.json({ status });
   } catch (error) {
-    console.error(
-      "Erreur Check Status:",
-      error.response?.data || error.message
-    );
-    res.status(500).json({ error: "Erreur lors de la vérification du statut" });
+    res.status(500).json({ error: "Erreur lors de la vérification" });
   }
 });
 
-// --- AUTRES ROUTES (CONSERVÉES À 100%) ---
+// --- ROUTES UTILISATEURS & ACTIONS ---
 
 app.get("/api/user/:id", async (req, res) => {
   try {
@@ -336,23 +314,68 @@ app.get("/api/transactions/user/:userId", async (req, res) => {
   }
 });
 
+// --- ROUTE ACHAT (LOGIQUE D'EXCHANGE AJOUTÉE) ---
 app.post("/api/transactions/buy", async (req, res) => {
   const { userId, actionId, quantity } = req.body;
+  const session = await mongoose.startSession(); // Utilisation d'une session pour garantir l'intégrité
+  session.startTransaction();
+
   try {
-    const user = await User.findById(userId);
-    const action = await Action.findById(actionId);
-    if (!action || action.status !== "valide")
-      return res.status(404).json({ error: "Non dispo" });
+    const user = await User.findById(userId).session(session);
+    const action = await Action.findById(actionId).session(session);
+
+    if (!action || action.status !== "valide") {
+      throw new Error("Action non disponible");
+    }
 
     const totalCost = action.price * quantity;
-    if (user.balance < totalCost)
-      return res.status(400).json({ error: "Solde insuffisant" });
-    if (action.availableQuantity < quantity)
-      return res.status(400).json({ error: "Parts insuffisantes" });
+    const sellerId = action.creatorId; // C'est l'actionnaire qui reçoit l'argent
 
-    action.availableQuantity -= quantity;
+    if (user.balance < totalCost) {
+      throw new Error("Solde insuffisant");
+    }
+    if (action.availableQuantity < quantity) {
+      throw new Error("Parts insuffisantes");
+    }
+
+    // 1. Débiter l'acheteur
     user.balance -= totalCost;
-    const transaction = new Transaction({
+    await user.save({ session });
+
+    // 2. Créditer le vendeur (Actionnaire)
+    if (sellerId) {
+      await User.findByIdAndUpdate(
+        sellerId,
+        { $inc: { balance: totalCost } },
+        { session }
+      );
+
+      // Notification pour le vendeur
+      await createNotify(
+        sellerId,
+        "Vente réussie !",
+        `Vous avez reçu ${totalCost} F pour la vente de parts de ${action.name}.`,
+        "success"
+      );
+
+      // Enregistrer la transaction côté vendeur
+      const sellerTx = new Transaction({
+        userId: sellerId,
+        actionId,
+        quantity,
+        amount: totalCost,
+        type: "vente",
+        status: "valide",
+      });
+      await sellerTx.save({ session });
+    }
+
+    // 3. Mettre à jour les parts de l'action
+    action.availableQuantity -= quantity;
+    await action.save({ session });
+
+    // 4. Enregistrer la transaction côté acheteur
+    const buyerTx = new Transaction({
       userId,
       actionId,
       quantity,
@@ -360,19 +383,23 @@ app.post("/api/transactions/buy", async (req, res) => {
       type: "achat",
       status: "valide",
     });
+    await buyerTx.save({ session });
 
-    await action.save();
-    await user.save();
-    await transaction.save();
+    // 5. Notification acheteur
     await createNotify(
       userId,
       "Achat réussi",
       `Acquisition de ${quantity} parts de ${action.name}.`,
       "success"
     );
+
+    await session.commitTransaction();
     res.json({ message: "Achat réussi !", newBalance: user.balance });
   } catch (err) {
-    res.status(500).json({ error: "Erreur achat" });
+    await session.abortTransaction();
+    res.status(500).json({ error: err.message || "Erreur achat" });
+  } finally {
+    session.endSession();
   }
 });
 
@@ -491,33 +518,22 @@ app.post("/api/admin/distribute-dividends", async (req, res) => {
   }
 });
 
-// Route pour valider manuellement un dépôt
 app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
   try {
     const { id } = req.params;
-
-    // 1. Trouver la transaction
     const tx = await Transaction.findById(id);
     if (!tx) return res.status(404).json({ error: "Transaction non trouvée" });
-
-    // 2. Vérifier si elle n'est pas déjà validée
     if (tx.status === "valide") {
       return res.status(400).json({ error: "Transaction déjà validée" });
     }
 
-    // 3. Mettre à jour le statut de la transaction
     tx.status = "valide";
     await tx.save();
 
-    // 4. Créditer le solde de l'utilisateur
     const user = await User.findByIdAndUpdate(
       tx.userId,
-      { $inc: { balance: tx.amount } }, // Ajoute le montant au solde actuel
+      { $inc: { balance: tx.amount } },
       { new: true }
-    );
-
-    console.log(
-      `✅ Dépôt validé : +${tx.amount} pour l'utilisateur ${user.email}`
     );
 
     res.json({
@@ -526,7 +542,6 @@ app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
       newBalance: user.balance,
     });
   } catch (error) {
-    console.error("Erreur validation admin:", error);
     res.status(500).json({ error: "Erreur serveur lors de la validation" });
   }
 });
