@@ -491,5 +491,45 @@ app.post("/api/admin/distribute-dividends", async (req, res) => {
   }
 });
 
+// Route pour valider manuellement un dépôt
+app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // 1. Trouver la transaction
+    const tx = await Transaction.findById(id);
+    if (!tx) return res.status(404).json({ error: "Transaction non trouvée" });
+
+    // 2. Vérifier si elle n'est pas déjà validée
+    if (tx.status === "valide") {
+      return res.status(400).json({ error: "Transaction déjà validée" });
+    }
+
+    // 3. Mettre à jour le statut de la transaction
+    tx.status = "valide";
+    await tx.save();
+
+    // 4. Créditer le solde de l'utilisateur
+    const user = await User.findByIdAndUpdate(
+      tx.userId,
+      { $inc: { balance: tx.amount } }, // Ajoute le montant au solde actuel
+      { new: true }
+    );
+
+    console.log(
+      `✅ Dépôt validé : +${tx.amount} pour l'utilisateur ${user.email}`
+    );
+
+    res.json({
+      message: "Transaction validée et solde mis à jour",
+      transaction: tx,
+      newBalance: user.balance,
+    });
+  } catch (error) {
+    console.error("Erreur validation admin:", error);
+    res.status(500).json({ error: "Erreur serveur lors de la validation" });
+  }
+});
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Serveur sur le port ${PORT}`));
