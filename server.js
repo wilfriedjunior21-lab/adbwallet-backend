@@ -187,6 +187,7 @@ app.post("/api/transactions/paymooney/init", async (req, res) => {
     params.append("lang", "fr");
     params.append("first_name", name || "Utilisateur");
     params.append("email", email || "");
+    params.append("environement", "test"); // FORCE LE MODE TEST ICI
 
     const response = await axios.post(
       "https://www.paymooney.com/api/v1.0/payment_url",
