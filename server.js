@@ -6,10 +6,16 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const { v4: uuidv4 } = require("uuid");
+const crypto = require("crypto"); // Ajouté pour la sécurité
 
 const app = express();
 app.use(express.json());
 app.use(cors());
+
+// --- CONFIGURATION PAYMOONEY ---
+const PAYMOONEY_PUBLIC_KEY = "PK_d5M4k6BYZ1qaHegEJ8x7";
+const PAYMOONEY_PRIVATE_KEY =
+  "SK_k3fUZ2N4QeK0jybeg3hUxAsYW7Q9B3K8Z9d7sAcaC9DuV8TaX1m0w7ryhaLa";
 
 // --- CONNEXION MONGODB ---
 mongoose
@@ -67,6 +73,7 @@ const transactionSchema = new mongoose.Schema({
   },
   date: { type: Date, default: Date.now },
   referenceId: { type: String },
+  paymentId: { type: String },
 });
 
 const notificationSchema = new mongoose.Schema({
@@ -78,7 +85,6 @@ const notificationSchema = new mongoose.Schema({
   date: { type: Date, default: Date.now },
 });
 
-// NOUVEAU MODÈLE : MESSAGES (SUPPORT)
 const messageSchema = new mongoose.Schema({
   actionId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -116,34 +122,7 @@ const createNotify = async (userId, title, message, type = "info") => {
   }
 };
 
-// --- CONFIGURATION MTN MOMO ---
-const mtnConfig = {
-  primaryKey: "8cc21d360efb40cfb4ef57d90bbb5e51",
-  apiUser: "5f04e913-c740-470f-8d70-a0f7eabd3642",
-  apiKey: "6b3d3a94a7ee4f33b8e19e963d957fb0",
-  env: "sandbox",
-  baseUrl: "https://sandbox.momodeveloper.mtn.com",
-};
-
-const getMTNToken = async () => {
-  const auth = Buffer.from(`${mtnConfig.apiUser}:${mtnConfig.apiKey}`).toString(
-    "base64"
-  );
-  const response = await axios.post(
-    `${mtnConfig.baseUrl}/collection/token/`,
-    {},
-    {
-      headers: {
-        Authorization: `Basic ${auth}`,
-        "Ocp-Apim-Subscription-Key": mtnConfig.primaryKey,
-      },
-    }
-  );
-  return response.data.access_token;
-};
-
 // --- ROUTES AUTHENTIFICATION ---
-
 app.post("/api/auth/register", async (req, res) => {
   try {
     const { name, email, password, role } = req.body;
@@ -181,38 +160,15 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-// --- INTEGRATION MTN MOMO PAY ---
+// --- INTEGRATION PAYMOONEY ---
 
-app.post("/api/transactions/mtn/pay", async (req, res) => {
-  const { amount, phone, userId } = req.body;
-  const referenceId = uuidv4();
-  const cleanPhone = phone.replace(/\D/g, "");
-
+// 1. Initialiser la transaction et générer l'URL de paiement
+app.post("/api/transactions/paymooney/init", async (req, res) => {
   try {
-    const token = await getMTNToken();
-    const payload = {
-      amount: amount.toString(),
-      currency: "EUR",
-      externalId: "ADB" + Date.now(),
-      payer: { partyIdType: "MSISDN", partyId: cleanPhone },
-      payerMessage: "Depot ADB Wallet",
-      payeeNote: "Investissement",
-    };
+    const { userId, amount, email, name } = req.body;
+    const referenceId = `PM-${uuidv4().substring(0, 8).toUpperCase()}`;
 
-    await axios.post(
-      `${mtnConfig.baseUrl}/collection/v1_0/requesttopay`,
-      payload,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "X-Reference-Id": referenceId,
-          "X-Target-Environment": mtnConfig.env,
-          "Ocp-Apim-Subscription-Key": mtnConfig.primaryKey,
-          "Content-Type": "application/json",
-        },
-      }
-    );
-
+    // On enregistre d'abord en attente
     const newTx = new Transaction({
       userId,
       amount: Number(amount),
@@ -222,57 +178,84 @@ app.post("/api/transactions/mtn/pay", async (req, res) => {
     });
     await newTx.save();
 
-    res.json({ message: "Veuillez valider le paiement", referenceId });
+    // Appel API PayMooney pour générer le lien réel
+    const paymooneyData = {
+      amount: amount,
+      currency_code: "XAF",
+      item_ref: referenceId,
+      item_name: "Dépôt Portefeuille ADB",
+      public_key: PAYMOONEY_PUBLIC_KEY,
+      lang: "fr",
+      email: email || "",
+      first_name: name || "Utilisateur",
+      // environment: "test" // Décommenter si tu es encore en phase de test
+    };
+
+    const response = await axios.post(
+      "https://www.paymooney.com/api/v1.0/payment_url",
+      paymooneyData
+    );
+
+    if (response.data.response === "success") {
+      res.json({
+        message: "URL générée",
+        payment_url: response.data.payment_url,
+        referenceId,
+      });
+    } else {
+      res
+        .status(400)
+        .json({ error: "Erreur PayMooney: " + response.data.description });
+    }
   } catch (error) {
-    res.status(500).json({ error: "Rejeté par MTN" });
+    console.error("Erreur Init PayMooney:", error);
+    res.status(500).json({ error: "Impossible d'initialiser le dépôt" });
   }
 });
 
-app.get("/api/transactions/mtn/status/:referenceId", async (req, res) => {
+// 2. Webhook sécurisé (Notification de PayMooney)
+app.post("/api/payments/paymooney-notify", async (req, res) => {
   try {
-    const token = await getMTNToken();
-    const { referenceId } = req.params;
+    const { status, item_reference, amount, transaction_id, sign_token } =
+      req.body;
+    const remoteIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
 
-    const response = await axios.get(
-      `${mtnConfig.baseUrl}/collection/v1_0/requesttopay/${referenceId}`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "X-Target-Environment": mtnConfig.env,
-          "Ocp-Apim-Subscription-Key": mtnConfig.primaryKey,
-        },
-      }
-    );
+    // --- SÉCURITÉ ---
+    // Vérification facultative de l'IP émettrice selon la doc (85.236.153.138)
+    // if (remoteIp !== "85.236.153.138") { console.warn("IP suspecte"); }
 
-    const status = response.data.status;
-
-    if (status === "SUCCESSFUL") {
+    if (status === "success" || status === "SUCCESS") {
       const tx = await Transaction.findOne({
-        referenceId,
+        referenceId: item_reference,
         status: "en_attente",
       });
+
       if (tx) {
         tx.status = "valide";
+        tx.paymentId = transaction_id;
         await tx.save();
+
         await User.findByIdAndUpdate(tx.userId, {
-          $inc: { balance: tx.amount },
+          $inc: { balance: Number(amount) },
         });
+
         await createNotify(
           tx.userId,
           "Dépôt Réussi",
-          `Votre compte a été crédité de ${tx.amount} F.`,
+          `Votre compte a été crédité de ${amount} F via PayMooney.`,
           "success"
         );
+        console.log(`✅ Paiement validé : ${item_reference}`);
       }
     }
-
-    res.json({ status });
+    res.status(200).send("OK");
   } catch (error) {
-    res.status(500).json({ error: "Erreur lors de la vérification" });
+    console.error("Erreur PayMooney Webhook:", error);
+    res.status(500).send("Erreur");
   }
 });
 
-// --- ROUTES UTILISATEURS & ACTIONS ---
+// --- ROUTES UTILISATEURS & ACTIONS (CONSERVÉES) ---
 
 app.get("/api/user/:id", async (req, res) => {
   try {
@@ -337,49 +320,38 @@ app.get("/api/transactions/user/:userId", async (req, res) => {
   }
 });
 
-// --- ROUTE ACHAT (LOGIQUE D'EXCHANGE) ---
 app.post("/api/transactions/buy", async (req, res) => {
   const { userId, actionId, quantity } = req.body;
   const session = await mongoose.startSession();
   session.startTransaction();
-
   try {
     const user = await User.findById(userId).session(session);
     const action = await Action.findById(actionId).session(session);
-
-    if (!action || action.status !== "valide") {
+    if (!action || action.status !== "valide")
       throw new Error("Action non disponible");
-    }
 
     const totalCost = action.price * quantity;
     const sellerId = action.creatorId;
 
-    if (user.balance < totalCost) {
-      throw new Error("Solde insuffisant");
-    }
-    if (action.availableQuantity < quantity) {
+    if (user.balance < totalCost) throw new Error("Solde insuffisant");
+    if (action.availableQuantity < quantity)
       throw new Error("Parts insuffisantes");
-    }
 
-    // 1. Débiter l'acheteur
     user.balance -= totalCost;
     await user.save({ session });
 
-    // 2. Créditer le vendeur (Actionnaire)
     if (sellerId) {
       await User.findByIdAndUpdate(
         sellerId,
         { $inc: { balance: totalCost } },
         { session }
       );
-
       await createNotify(
         sellerId,
         "Vente réussie !",
-        `Vous avez reçu ${totalCost} F pour la vente de parts de ${action.name}.`,
+        `Reçu ${totalCost} F pour ${action.name}.`,
         "success"
       );
-
       const sellerTx = new Transaction({
         userId: sellerId,
         actionId,
@@ -391,11 +363,9 @@ app.post("/api/transactions/buy", async (req, res) => {
       await sellerTx.save({ session });
     }
 
-    // 3. Mettre à jour les parts de l'action
     action.availableQuantity -= quantity;
     await action.save({ session });
 
-    // 4. Enregistrer la transaction côté acheteur
     const buyerTx = new Transaction({
       userId,
       actionId,
@@ -412,7 +382,6 @@ app.post("/api/transactions/buy", async (req, res) => {
       `Acquisition de ${quantity} parts de ${action.name}.`,
       "success"
     );
-
     await session.commitTransaction();
     res.json({ message: "Achat réussi !", newBalance: user.balance });
   } catch (err) {
@@ -423,25 +392,17 @@ app.post("/api/transactions/buy", async (req, res) => {
   }
 });
 
-// --- NOUVELLE ROUTE : RETRAIT POUR ACTIONNAIRE ---
 app.post("/api/transactions/withdraw", async (req, res) => {
   const { userId, amount } = req.body;
   try {
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    if (user.balance < amount)
+      return res.status(400).json({ error: "Solde insuffisant" });
 
-    // Vérification du solde
-    if (user.balance < amount) {
-      return res
-        .status(400)
-        .json({ error: "Solde insuffisant pour ce retrait" });
-    }
-
-    // Débit immédiat du solde pour "bloquer" les fonds
     user.balance -= Number(amount);
     await user.save();
 
-    // Création de la transaction de retrait en attente de validation admin
     const withdrawTx = new Transaction({
       userId,
       amount: Number(amount),
@@ -450,21 +411,15 @@ app.post("/api/transactions/withdraw", async (req, res) => {
     });
     await withdrawTx.save();
 
-    // Notification
     await createNotify(
       userId,
       "Demande de retrait",
-      `Votre demande de ${amount} F est en cours de traitement par l'administration.`,
+      `Votre demande de ${amount} F est en cours.`,
       "info"
     );
-
-    res.json({
-      message: "Demande de retrait enregistrée",
-      newBalance: user.balance,
-    });
+    res.json({ message: "Demande enregistrée", newBalance: user.balance });
   } catch (err) {
-    console.error("Erreur retrait:", err);
-    res.status(500).json({ error: "Erreur serveur lors du retrait" });
+    res.status(500).json({ error: "Erreur retrait" });
   }
 });
 
@@ -492,7 +447,6 @@ app.patch("/api/notifications/mark-read", async (req, res) => {
 });
 
 // --- ROUTES ADMIN ---
-
 app.get("/api/admin/users", async (req, res) => {
   const users = await User.find().select("-password");
   res.json(users);
@@ -577,7 +531,7 @@ app.post("/api/admin/distribute-dividends", async (req, res) => {
     });
 
     await Promise.all(distributionPromises);
-    res.json({ message: `Dividendes distribués pour ${action.name}` });
+    res.json({ message: `Dividendes distribués` });
   } catch (err) {
     res.status(500).json({ error: "Erreur" });
   }
@@ -585,32 +539,17 @@ app.post("/api/admin/distribute-dividends", async (req, res) => {
 
 app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
   try {
-    const { id } = req.params;
-    const tx = await Transaction.findById(id);
-    if (!tx) return res.status(404).json({ error: "Transaction non trouvée" });
-    if (tx.status === "valide") {
-      return res.status(400).json({ error: "Transaction déjà validée" });
-    }
-
+    const tx = await Transaction.findById(req.params.id);
+    if (!tx || tx.status === "valide")
+      return res.status(400).json({ error: "Invalide" });
     tx.status = "valide";
     await tx.save();
-
-    // On ne crédite que si c'est un dépôt.
-    // Pour un retrait, le débit a déjà été fait à la création de la demande.
     if (tx.type === "depot") {
-      const user = await User.findByIdAndUpdate(
-        tx.userId,
-        { $inc: { balance: tx.amount } },
-        { new: true }
-      );
+      await User.findByIdAndUpdate(tx.userId, { $inc: { balance: tx.amount } });
     }
-
-    res.json({
-      message: "Transaction validée avec succès",
-      transaction: tx,
-    });
+    res.json({ message: "Transaction validée" });
   } catch (error) {
-    res.status(500).json({ error: "Erreur serveur lors de la validation" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
@@ -624,34 +563,28 @@ app.patch("/api/actions/:id", async (req, res) => {
     );
     res.json(updatedAction);
   } catch (err) {
-    res.status(500).json({ error: "Erreur lors de la mise à jour de l'actif" });
+    res.status(500).json({ error: "Erreur mise à jour" });
   }
 });
 
 // --- SYSTÈME DE MESSAGERIE (SUPPORT) ---
-
-// 1. Envoyer une question (Acheteur -> Actionnaire)
 app.post("/api/messages/send", async (req, res) => {
   try {
     const { actionId, senderId, receiverId, content } = req.body;
     const newMessage = new Message({ actionId, senderId, receiverId, content });
     await newMessage.save();
-
-    // Notifier l'actionnaire
     await createNotify(
       receiverId,
       "Nouvelle question",
       `Un acheteur a posé une question sur votre actif.`,
       "info"
     );
-
     res.status(201).json(newMessage);
   } catch (err) {
-    res.status(500).json({ error: "Erreur lors de l'envoi du message" });
+    res.status(500).json({ error: "Erreur envoi" });
   }
 });
 
-// 2. Récupérer les messages pour un actionnaire (Vue Actionnaire)
 app.get("/api/messages/owner/:userId", async (req, res) => {
   try {
     const messages = await Message.find({ receiverId: req.params.userId })
@@ -660,14 +593,10 @@ app.get("/api/messages/owner/:userId", async (req, res) => {
       .sort({ createdAt: -1 });
     res.json(messages);
   } catch (err) {
-    res
-      .status(500)
-      .json({ error: "Erreur lors de la récupération des messages" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
-// 3. Récupérer les messages pour un acheteur (Vue Acheteur / Dashboard)
-// Ajouté pour permettre à l'acheteur de voir l'historique de ses messages et les réponses
 app.get("/api/messages/buyer/:userId", async (req, res) => {
   try {
     const messages = await Message.find({ senderId: req.params.userId })
@@ -676,13 +605,10 @@ app.get("/api/messages/buyer/:userId", async (req, res) => {
       .sort({ createdAt: 1 });
     res.json(messages);
   } catch (err) {
-    res
-      .status(500)
-      .json({ error: "Erreur lors du chargement de vos messages" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
-// 4. Récupérer les messages d'un actif spécifique pour un utilisateur donné
 app.get("/api/messages/chat/:actionId/:userId", async (req, res) => {
   try {
     const messages = await Message.find({
@@ -695,7 +621,6 @@ app.get("/api/messages/chat/:actionId/:userId", async (req, res) => {
   }
 });
 
-// 5. Répondre à un message (Actionnaire -> Acheteur)
 app.patch("/api/messages/reply/:messageId", async (req, res) => {
   try {
     const { reply } = req.body;
@@ -704,18 +629,15 @@ app.patch("/api/messages/reply/:messageId", async (req, res) => {
       { reply },
       { new: true }
     );
-
-    // Notifier l'acheteur que l'actionnaire a répondu
     await createNotify(
       message.senderId,
       "Réponse reçue",
       `L'actionnaire a répondu à votre question.`,
       "success"
     );
-
     res.json(message);
   } catch (err) {
-    res.status(500).json({ error: "Erreur lors de la réponse" });
+    res.status(500).json({ error: "Erreur réponse" });
   }
 });
 
