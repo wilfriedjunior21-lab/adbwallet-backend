@@ -636,5 +636,61 @@ app.patch("/api/messages/reply/:messageId", async (req, res) => {
   }
 });
 
+// ROUTE : REJETER UN RETRAIT ET REMBOURSER L'UTILISATEUR
+app.patch("/api/admin/transactions/:id/reject", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body; // Le motif saisi dans le prompt
+
+    // 1. Trouver la transaction
+    const transaction = await Transaction.findById(id);
+
+    if (!transaction) {
+      return res.status(404).json({ error: "Transaction introuvable" });
+    }
+
+    if (transaction.status !== "en_attente") {
+      return res
+        .status(400)
+        .json({ error: "Cette transaction n'est plus en attente" });
+    }
+
+    // 2. Trouver l'utilisateur concerné
+    const user = await User.findById(transaction.userId);
+    if (!user) {
+      return res.status(404).json({ error: "Utilisateur introuvable" });
+    }
+
+    // 3. RECRÉDITER LE SOLDE : On rajoute le montant du retrait refusé au solde actuel
+    user.wallet = (user.wallet || 0) + transaction.amount;
+
+    // 4. Mettre à jour la transaction
+    transaction.status = "rejete";
+    transaction.comment = reason || "Retrait refusé par l'administrateur";
+
+    // 5. Créer une notification pour l'utilisateur
+    if (typeof createNotify === "function") {
+      await createNotify(
+        user._id,
+        "Retrait refusé",
+        `Votre retrait de ${transaction.amount} F a été refusé. Motif : ${transaction.comment}. Le montant a été recrédité sur votre solde.`,
+        "retrait"
+      );
+    }
+
+    // Sauvegarder les modifications
+    await user.save();
+    await transaction.save();
+
+    res.json({
+      message: "Retrait refusé avec succès et utilisateur recrédité",
+      newBalance: user.wallet,
+    });
+  } catch (error) {
+    console.error("Erreur lors du rejet du retrait:", error);
+    res.status(500).json({ error: "Erreur serveur lors du rejet" });
+  }
+});
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Serveur sur le port ${PORT}`));
