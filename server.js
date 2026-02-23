@@ -78,10 +78,33 @@ const notificationSchema = new mongoose.Schema({
   date: { type: Date, default: Date.now },
 });
 
+// NOUVEAU MODÈLE : MESSAGES (SUPPORT)
+const messageSchema = new mongoose.Schema({
+  actionId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Action",
+    required: true,
+  },
+  senderId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: true,
+  },
+  receiverId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: true,
+  },
+  content: { type: String, required: true },
+  reply: { type: String, default: "" },
+  createdAt: { type: Date, default: Date.now },
+});
+
 const User = mongoose.model("User", userSchema);
 const Action = mongoose.model("Action", actionSchema);
 const Transaction = mongoose.model("Transaction", transactionSchema);
 const Notification = mongoose.model("Notification", notificationSchema);
+const Message = mongoose.model("Message", messageSchema);
 
 // --- FONCTION UTILITAIRE NOTIFICATIONS ---
 const createNotify = async (userId, title, message, type = "info") => {
@@ -602,6 +625,97 @@ app.patch("/api/actions/:id", async (req, res) => {
     res.json(updatedAction);
   } catch (err) {
     res.status(500).json({ error: "Erreur lors de la mise à jour de l'actif" });
+  }
+});
+
+// --- SYSTÈME DE MESSAGERIE (SUPPORT) ---
+
+// 1. Envoyer une question (Acheteur -> Actionnaire)
+app.post("/api/messages/send", async (req, res) => {
+  try {
+    const { actionId, senderId, receiverId, content } = req.body;
+    const newMessage = new Message({ actionId, senderId, receiverId, content });
+    await newMessage.save();
+
+    // Notifier l'actionnaire
+    await createNotify(
+      receiverId,
+      "Nouvelle question",
+      `Un acheteur a posé une question sur votre actif.`,
+      "info"
+    );
+
+    res.status(201).json(newMessage);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur lors de l'envoi du message" });
+  }
+});
+
+// 2. Récupérer les messages pour un actionnaire (Vue Actionnaire)
+app.get("/api/messages/owner/:userId", async (req, res) => {
+  try {
+    const messages = await Message.find({ receiverId: req.params.userId })
+      .populate("senderId", "name")
+      .populate("actionId", "name")
+      .sort({ createdAt: -1 });
+    res.json(messages);
+  } catch (err) {
+    res
+      .status(500)
+      .json({ error: "Erreur lors de la récupération des messages" });
+  }
+});
+
+// 3. Récupérer les messages pour un acheteur (Vue Acheteur / Dashboard)
+// Ajouté pour permettre à l'acheteur de voir l'historique de ses messages et les réponses
+app.get("/api/messages/buyer/:userId", async (req, res) => {
+  try {
+    const messages = await Message.find({ senderId: req.params.userId })
+      .populate("actionId", "name")
+      .populate("receiverId", "name")
+      .sort({ createdAt: 1 });
+    res.json(messages);
+  } catch (err) {
+    res
+      .status(500)
+      .json({ error: "Erreur lors du chargement de vos messages" });
+  }
+});
+
+// 4. Récupérer les messages d'un actif spécifique pour un utilisateur donné
+app.get("/api/messages/chat/:actionId/:userId", async (req, res) => {
+  try {
+    const messages = await Message.find({
+      actionId: req.params.actionId,
+      $or: [{ senderId: req.params.userId }, { receiverId: req.params.userId }],
+    }).sort({ createdAt: 1 });
+    res.json(messages);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur chat" });
+  }
+});
+
+// 5. Répondre à un message (Actionnaire -> Acheteur)
+app.patch("/api/messages/reply/:messageId", async (req, res) => {
+  try {
+    const { reply } = req.body;
+    const message = await Message.findByIdAndUpdate(
+      req.params.messageId,
+      { reply },
+      { new: true }
+    );
+
+    // Notifier l'acheteur que l'actionnaire a répondu
+    await createNotify(
+      message.senderId,
+      "Réponse reçue",
+      `L'actionnaire a répondu à votre question.`,
+      "success"
+    );
+
+    res.json(message);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur lors de la réponse" });
   }
 });
 
