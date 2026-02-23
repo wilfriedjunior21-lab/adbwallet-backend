@@ -22,7 +22,6 @@ mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
     console.log("✅ MongoDB Connecté");
-    // Lancement du moteur de marché une fois connecté
     startMarketEngine();
   })
   .catch((err) => console.error("❌ Erreur MongoDB:", err));
@@ -75,6 +74,7 @@ const transactionSchema = new mongoose.Schema({
     enum: ["en_attente", "valide", "rejete"],
     default: "valide",
   },
+  recipientPhone: { type: String, default: "" }, // <--- AJOUTÉ : Numéro de tel pour retrait
   date: { type: Date, default: Date.now },
   referenceId: { type: String },
   paymentId: { type: String },
@@ -143,7 +143,6 @@ const startMarketEngine = () => {
         action.price = newPrice < 10 ? 10 : newPrice;
         await action.save();
       }
-      console.log("📈 Les prix du marché ont été mis à jour.");
     } catch (err) {
       console.error("Erreur Market Engine:", err);
     }
@@ -403,8 +402,9 @@ app.post("/api/transactions/buy", async (req, res) => {
   }
 });
 
+// --- ROUTE RETRAIT MODIFIÉE (AVEC NUMÉRO DE TÉLÉPHONE) ---
 app.post("/api/transactions/withdraw", async (req, res) => {
-  const { userId, amount } = req.body;
+  const { userId, amount, recipientPhone } = req.body; // <--- AJOUT : recipientPhone
   try {
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
@@ -417,6 +417,7 @@ app.post("/api/transactions/withdraw", async (req, res) => {
     const withdrawTx = new Transaction({
       userId,
       amount: Number(amount),
+      recipientPhone: recipientPhone || "Non spécifié", // <--- ENREGISTREMENT
       type: "retrait",
       status: "en_attente",
     });
@@ -425,7 +426,7 @@ app.post("/api/transactions/withdraw", async (req, res) => {
     await createNotify(
       userId,
       "Demande de retrait",
-      `Demande de ${amount} F en cours.`,
+      `Demande de ${amount} F via ${recipientPhone} envoyée.`,
       "info"
     );
     res.json({ message: "Demande enregistrée", newBalance: user.balance });
@@ -645,48 +646,37 @@ app.patch("/api/messages/reply/:messageId", async (req, res) => {
   }
 });
 
-// --- ROUTE DE REJET CORRIGÉE (REMBOURSEMENT BALANCE) ---
 app.patch("/api/admin/transactions/:id/reject", async (req, res) => {
   try {
     const { id } = req.params;
     const { reason } = req.body;
-
     const transaction = await Transaction.findById(id);
     if (!transaction)
       return res.status(404).json({ error: "Transaction introuvable" });
-
-    if (transaction.status !== "en_attente") {
-      return res
-        .status(400)
-        .json({ error: "Cette transaction n'est plus en attente" });
-    }
+    if (transaction.status !== "en_attente")
+      return res.status(400).json({ error: "Déjà traitée" });
 
     const user = await User.findById(transaction.userId);
     if (!user)
       return res.status(404).json({ error: "Utilisateur introuvable" });
 
-    // CRUCIAL : Remboursement sur balance (pour actionnaire ET acheteur)
     user.balance = (user.balance || 0) + transaction.amount;
-
     transaction.status = "rejete";
     transaction.comment = reason || "Retrait refusé par l'administrateur";
 
     await createNotify(
       user._id,
       "Retrait refusé",
-      `Votre retrait de ${transaction.amount} F a été refusé. Le montant a été recrédité sur votre solde.`,
+      `Retrait de ${transaction.amount} F refusé (Num: ${transaction.recipientPhone}). Balance créditée.`,
       "retrait"
     );
-
     await user.save();
     await transaction.save();
-
     res.json({
       message: "Retrait refusé et utilisateur recrédité",
       newBalance: user.balance,
     });
   } catch (error) {
-    console.error("Erreur rejet:", error);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
