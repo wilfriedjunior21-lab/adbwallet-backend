@@ -6,7 +6,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const { v4: uuidv4 } = require("uuid");
-const crypto = require("crypto"); // Ajouté pour la sécurité
+const crypto = require("crypto");
 
 const app = express();
 app.use(express.json());
@@ -162,13 +162,11 @@ app.post("/api/auth/login", async (req, res) => {
 
 // --- INTEGRATION PAYMOONEY ---
 
-// 1. Initialiser la transaction et générer l'URL de paiement
 app.post("/api/transactions/paymooney/init", async (req, res) => {
   try {
     const { userId, amount, email, name } = req.body;
     const referenceId = `PM-${uuidv4().substring(0, 8).toUpperCase()}`;
 
-    // On enregistre d'abord en attente
     const newTx = new Transaction({
       userId,
       amount: Number(amount),
@@ -178,22 +176,22 @@ app.post("/api/transactions/paymooney/init", async (req, res) => {
     });
     await newTx.save();
 
-    // Appel API PayMooney pour générer le lien réel
-    const paymooneyData = {
-      amount: amount,
-      currency_code: "XAF",
-      item_ref: referenceId,
-      item_name: "Dépôt Portefeuille ADB",
-      public_key: PAYMOONEY_PUBLIC_KEY,
-      lang: "fr",
-      email: email || "",
-      first_name: name || "Utilisateur",
-      // environment: "test" // Décommenter si tu es encore en phase de test
-    };
+    // Utilisation de URLSearchParams pour envoyer les données au format correct (form-data/www-form-urlencoded)
+    // Cela évite souvent les erreurs 404/400 sur PayMooney
+    const params = new URLSearchParams();
+    params.append("amount", amount);
+    params.append("currency_code", "XAF");
+    params.append("item_ref", referenceId);
+    params.append("item_name", "Dépôt ADB Wallet");
+    params.append("public_key", PAYMOONEY_PUBLIC_KEY);
+    params.append("lang", "fr");
+    params.append("first_name", name || "Utilisateur");
+    params.append("email", email || "");
 
     const response = await axios.post(
       "https://www.paymooney.com/api/v1.0/payment_url",
-      paymooneyData
+      params,
+      { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
     );
 
     if (response.data.response === "success") {
@@ -205,24 +203,20 @@ app.post("/api/transactions/paymooney/init", async (req, res) => {
     } else {
       res
         .status(400)
-        .json({ error: "Erreur PayMooney: " + response.data.description });
+        .json({ error: response.data.description || "Erreur PayMooney" });
     }
   } catch (error) {
-    console.error("Erreur Init PayMooney:", error);
-    res.status(500).json({ error: "Impossible d'initialiser le dépôt" });
+    console.error(
+      "Erreur Init PayMooney:",
+      error.response ? error.response.data : error.message
+    );
+    res.status(500).json({ error: "Impossible d'initialiser le paiement" });
   }
 });
 
-// 2. Webhook sécurisé (Notification de PayMooney)
 app.post("/api/payments/paymooney-notify", async (req, res) => {
   try {
-    const { status, item_reference, amount, transaction_id, sign_token } =
-      req.body;
-    const remoteIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
-
-    // --- SÉCURITÉ ---
-    // Vérification facultative de l'IP émettrice selon la doc (85.236.153.138)
-    // if (remoteIp !== "85.236.153.138") { console.warn("IP suspecte"); }
+    const { status, item_reference, amount, transaction_id } = req.body;
 
     if (status === "success" || status === "SUCCESS") {
       const tx = await Transaction.findOne({
