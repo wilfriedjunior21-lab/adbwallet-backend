@@ -20,7 +20,11 @@ const PAYMOONEY_PRIVATE_KEY =
 // --- CONNEXION MONGODB ---
 mongoose
   .connect(process.env.MONGO_URI)
-  .then(() => console.log("✅ MongoDB Connecté"))
+  .then(() => {
+    console.log("✅ MongoDB Connecté");
+    // Lancement du moteur de marché une fois connecté
+    startMarketEngine();
+  })
   .catch((err) => console.error("❌ Erreur MongoDB:", err));
 
 // --- MODÈLES ---
@@ -74,13 +78,18 @@ const transactionSchema = new mongoose.Schema({
   date: { type: Date, default: Date.now },
   referenceId: { type: String },
   paymentId: { type: String },
+  comment: String,
 });
 
 const notificationSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   title: String,
   message: String,
-  type: { type: String, enum: ["info", "success", "warning"], default: "info" },
+  type: {
+    type: String,
+    enum: ["info", "success", "warning", "retrait"],
+    default: "info",
+  },
   read: { type: Boolean, default: false },
   date: { type: Date, default: Date.now },
 });
@@ -122,6 +131,25 @@ const createNotify = async (userId, title, message, type = "info") => {
   }
 };
 
+// --- MOTEUR DE MARCHÉ ---
+const startMarketEngine = () => {
+  console.log("🚀 Moteur de Marché activé (cycle: 30 min)");
+  setInterval(async () => {
+    try {
+      const actions = await Action.find({ status: "valide" });
+      for (let action of actions) {
+        const changePercent = (Math.random() * 4 - 1.5) / 100;
+        const newPrice = Math.round(action.price * (1 + changePercent));
+        action.price = newPrice < 10 ? 10 : newPrice;
+        await action.save();
+      }
+      console.log("📈 Les prix du marché ont été mis à jour.");
+    } catch (err) {
+      console.error("Erreur Market Engine:", err);
+    }
+  }, 30 * 60 * 1000);
+};
+
 // --- ROUTES AUTHENTIFICATION ---
 app.post("/api/auth/register", async (req, res) => {
   try {
@@ -161,7 +189,6 @@ app.post("/api/auth/login", async (req, res) => {
 });
 
 // --- INTEGRATION PAYMOONEY ---
-
 app.post("/api/transactions/paymooney/init", async (req, res) => {
   try {
     const { userId, amount, email, name } = req.body;
@@ -176,8 +203,6 @@ app.post("/api/transactions/paymooney/init", async (req, res) => {
     });
     await newTx.save();
 
-    // Utilisation de URLSearchParams pour envoyer les données au format correct (form-data/www-form-urlencoded)
-    // Cela évite souvent les erreurs 404/400 sur PayMooney
     const params = new URLSearchParams();
     params.append("amount", amount);
     params.append("currency_code", "XAF");
@@ -187,7 +212,7 @@ app.post("/api/transactions/paymooney/init", async (req, res) => {
     params.append("lang", "fr");
     params.append("first_name", name || "Utilisateur");
     params.append("email", email || "");
-    params.append("environement", "test"); // FORCE LE MODE TEST ICI
+    params.append("environement", "test");
 
     const response = await axios.post(
       "https://www.paymooney.com/api/v1.0/payment_url",
@@ -207,10 +232,6 @@ app.post("/api/transactions/paymooney/init", async (req, res) => {
         .json({ error: response.data.description || "Erreur PayMooney" });
     }
   } catch (error) {
-    console.error(
-      "Erreur Init PayMooney:",
-      error.response ? error.response.data : error.message
-    );
     res.status(500).json({ error: "Impossible d'initialiser le paiement" });
   }
 });
@@ -218,40 +239,33 @@ app.post("/api/transactions/paymooney/init", async (req, res) => {
 app.post("/api/payments/paymooney-notify", async (req, res) => {
   try {
     const { status, item_reference, amount, transaction_id } = req.body;
-
     if (status === "success" || status === "SUCCESS") {
       const tx = await Transaction.findOne({
         referenceId: item_reference,
         status: "en_attente",
       });
-
       if (tx) {
         tx.status = "valide";
         tx.paymentId = transaction_id;
         await tx.save();
-
         await User.findByIdAndUpdate(tx.userId, {
           $inc: { balance: Number(amount) },
         });
-
         await createNotify(
           tx.userId,
           "Dépôt Réussi",
-          `Votre compte a été crédité de ${amount} F via PayMooney.`,
+          `Compte crédité de ${amount} F.`,
           "success"
         );
-        console.log(`✅ Paiement validé : ${item_reference}`);
       }
     }
     res.status(200).send("OK");
   } catch (error) {
-    console.error("Erreur PayMooney Webhook:", error);
     res.status(500).send("Erreur");
   }
 });
 
-// --- ROUTES UTILISATEURS & ACTIONS (CONSERVÉES) ---
-
+// --- ROUTES UTILISATEURS & ACTIONS ---
 app.get("/api/user/:id", async (req, res) => {
   try {
     const user = await User.findById(req.params.id).select("-password");
@@ -295,7 +309,7 @@ app.post("/api/actions/propose", async (req, res) => {
     await createNotify(
       creatorId,
       "Proposition envoyée",
-      `Votre projet ${name} est en attente.`,
+      `Projet ${name} en attente.`,
       "info"
     );
     res.status(201).json({ message: "Proposition envoyée" });
@@ -358,6 +372,8 @@ app.post("/api/transactions/buy", async (req, res) => {
       await sellerTx.save({ session });
     }
 
+    const priceHike = action.price * (0.0005 * quantity);
+    action.price = Math.round(action.price + priceHike);
     action.availableQuantity -= quantity;
     await action.save({ session });
 
@@ -381,7 +397,7 @@ app.post("/api/transactions/buy", async (req, res) => {
     res.json({ message: "Achat réussi !", newBalance: user.balance });
   } catch (err) {
     await session.abortTransaction();
-    res.status(500).json({ error: err.message || "Erreur achat" });
+    res.status(500).json({ error: err.message });
   } finally {
     session.endSession();
   }
@@ -409,7 +425,7 @@ app.post("/api/transactions/withdraw", async (req, res) => {
     await createNotify(
       userId,
       "Demande de retrait",
-      `Votre demande de ${amount} F est en cours.`,
+      `Demande de ${amount} F en cours.`,
       "info"
     );
     res.json({ message: "Demande enregistrée", newBalance: user.balance });
@@ -462,19 +478,18 @@ app.patch("/api/admin/actions/:id/validate", async (req, res) => {
     await createNotify(
       action.creatorId,
       "Action publiée !",
-      `Votre actif ${action.name} est en vente.`,
+      `${action.name} est en vente.`,
       "success"
     );
     const acheteurs = await User.find({ role: "acheteur" });
-    const notificationPromises = acheteurs.map((acheteur) =>
-      createNotify(
-        acheteur._id,
+    for (let ach of acheteurs) {
+      await createNotify(
+        ach._id,
         "Nouvelle opportunité",
-        `${action.name} est disponible à ${action.price} F !`,
+        `${action.name} est disponible !`,
         "info"
-      )
-    );
-    await Promise.all(notificationPromises);
+      );
+    }
     res.json({ message: "Action publiée" });
   } catch (err) {
     res.status(500).json({ error: "Erreur" });
@@ -496,36 +511,30 @@ app.post("/api/admin/distribute-dividends", async (req, res) => {
   const { actionId, amountPerShare } = req.body;
   try {
     const action = await Action.findById(actionId);
-    if (!action) return res.status(404).json({ error: "Non trouvé" });
     const purchases = await Transaction.find({
       actionId,
       type: "achat",
       status: "valide",
     });
-
-    const distributionPromises = purchases.map(async (tx) => {
-      const dividendAmount = tx.quantity * amountPerShare;
-      await User.findByIdAndUpdate(tx.userId, {
-        $inc: { balance: dividendAmount },
-      });
+    for (let tx of purchases) {
+      const divAmount = tx.quantity * amountPerShare;
+      await User.findByIdAndUpdate(tx.userId, { $inc: { balance: divAmount } });
       const divTx = new Transaction({
         userId: tx.userId,
         actionId: action._id,
-        amount: dividendAmount,
+        amount: divAmount,
         quantity: tx.quantity,
         type: "dividende",
         status: "valide",
       });
       await divTx.save();
-      return createNotify(
+      await createNotify(
         tx.userId,
-        "Dividendes reçus !",
-        `${dividendAmount} F reçus pour ${action.name}.`,
+        "Dividendes !",
+        `${divAmount} F reçus pour ${action.name}.`,
         "success"
       );
-    });
-
-    await Promise.all(distributionPromises);
+    }
     res.json({ message: `Dividendes distribués` });
   } catch (err) {
     res.status(500).json({ error: "Erreur" });
@@ -562,7 +571,7 @@ app.patch("/api/actions/:id", async (req, res) => {
   }
 });
 
-// --- SYSTÈME DE MESSAGERIE (SUPPORT) ---
+// --- MESSAGERIE ---
 app.post("/api/messages/send", async (req, res) => {
   try {
     const { actionId, senderId, receiverId, content } = req.body;
@@ -571,12 +580,12 @@ app.post("/api/messages/send", async (req, res) => {
     await createNotify(
       receiverId,
       "Nouvelle question",
-      `Un acheteur a posé une question sur votre actif.`,
+      `Question sur votre actif.`,
       "info"
     );
     res.status(201).json(newMessage);
   } catch (err) {
-    res.status(500).json({ error: "Erreur envoi" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
@@ -612,7 +621,7 @@ app.get("/api/messages/chat/:actionId/:userId", async (req, res) => {
     }).sort({ createdAt: 1 });
     res.json(messages);
   } catch (err) {
-    res.status(500).json({ error: "Erreur chat" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
@@ -627,27 +636,24 @@ app.patch("/api/messages/reply/:messageId", async (req, res) => {
     await createNotify(
       message.senderId,
       "Réponse reçue",
-      `L'actionnaire a répondu à votre question.`,
+      `L'actionnaire a répondu.`,
       "success"
     );
     res.json(message);
   } catch (err) {
-    res.status(500).json({ error: "Erreur réponse" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
-// ROUTE : REJETER UN RETRAIT ET REMBOURSER L'UTILISATEUR
+// --- ROUTE DE REJET CORRIGÉE (REMBOURSEMENT BALANCE) ---
 app.patch("/api/admin/transactions/:id/reject", async (req, res) => {
   try {
     const { id } = req.params;
-    const { reason } = req.body; // Le motif saisi dans le prompt
+    const { reason } = req.body;
 
-    // 1. Trouver la transaction
     const transaction = await Transaction.findById(id);
-
-    if (!transaction) {
+    if (!transaction)
       return res.status(404).json({ error: "Transaction introuvable" });
-    }
 
     if (transaction.status !== "en_attente") {
       return res
@@ -655,40 +661,33 @@ app.patch("/api/admin/transactions/:id/reject", async (req, res) => {
         .json({ error: "Cette transaction n'est plus en attente" });
     }
 
-    // 2. Trouver l'utilisateur concerné
     const user = await User.findById(transaction.userId);
-    if (!user) {
+    if (!user)
       return res.status(404).json({ error: "Utilisateur introuvable" });
-    }
 
-    // 3. RECRÉDITER LE SOLDE : On rajoute le montant du retrait refusé au solde actuel
-    user.wallet = (user.wallet || 0) + transaction.amount;
+    // CRUCIAL : Remboursement sur balance (pour actionnaire ET acheteur)
+    user.balance = (user.balance || 0) + transaction.amount;
 
-    // 4. Mettre à jour la transaction
     transaction.status = "rejete";
     transaction.comment = reason || "Retrait refusé par l'administrateur";
 
-    // 5. Créer une notification pour l'utilisateur
-    if (typeof createNotify === "function") {
-      await createNotify(
-        user._id,
-        "Retrait refusé",
-        `Votre retrait de ${transaction.amount} F a été refusé. Motif : ${transaction.comment}. Le montant a été recrédité sur votre solde.`,
-        "retrait"
-      );
-    }
+    await createNotify(
+      user._id,
+      "Retrait refusé",
+      `Votre retrait de ${transaction.amount} F a été refusé. Le montant a été recrédité sur votre solde.`,
+      "retrait"
+    );
 
-    // Sauvegarder les modifications
     await user.save();
     await transaction.save();
 
     res.json({
-      message: "Retrait refusé avec succès et utilisateur recrédité",
-      newBalance: user.wallet,
+      message: "Retrait refusé et utilisateur recrédité",
+      newBalance: user.balance,
     });
   } catch (error) {
-    console.error("Erreur lors du rejet du retrait:", error);
-    res.status(500).json({ error: "Erreur serveur lors du rejet" });
+    console.error("Erreur rejet:", error);
+    res.status(500).json({ error: "Erreur serveur" });
   }
 });
 
