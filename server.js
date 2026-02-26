@@ -188,20 +188,24 @@ app.post("/api/auth/login", async (req, res) => {
 });
 
 // --- INTEGRATION PAYMOONEY ---
-// --- INITIALISATION DU PAIEMENT ---
-// Changé 'transactions' en 'payments' pour la cohérence
+const axios = require("axios");
+const { v4: uuidv4 } = require("uuid");
+
 app.post("/api/payments/paymooney/init", async (req, res) => {
   try {
     const { userId, amount, email, name } = req.body;
 
-    // 1. Validation de base
-    if (!userId || !amount) {
-      return res.status(400).json({ error: "Données manquantes" });
+    // 1. Vérification des données entrantes
+    if (!userId || !amount || !email) {
+      return res.status(400).json({
+        error:
+          "Données manquantes. L'email, le montant et l'ID utilisateur sont obligatoires.",
+      });
     }
 
     const referenceId = `PM-${uuidv4().substring(0, 8).toUpperCase()}`;
 
-    // 2. Création de la transaction en attente
+    // 2. Sauvegarde de la transaction en attente (Logique existante)
     const newTx = new Transaction({
       userId,
       amount: Number(amount),
@@ -213,16 +217,20 @@ app.post("/api/payments/paymooney/init", async (req, res) => {
 
     // 3. Préparation des paramètres pour PayMooney
     const params = new URLSearchParams();
-    params.append("amount", amount);
-    params.append("currency_code", "XAF");
+    params.append("amount", amount.toString());
+    params.append("currency_code", "XAF"); // Paramètre standard
     params.append("item_ref", referenceId);
-    params.append("item_name", "Dépôt ADB Wallet");
-    params.append("public_key", process.env.PAYMOONEY_PUBLIC_KEY); // Utilise env
+    params.append("item_name", "Depot ADB Wallet");
+    params.append(
+      "public_key",
+      process.env.PAYMOONEY_PUBLIC_KEY || "PK_d5M4k6BYZ1qaHegEJ8x7"
+    );
     params.append("lang", "fr");
-    params.append("first_name", name || "Utilisateur");
-    params.append("email", email || "");
-    // params.append("environement", "test"); // Attention à l'orthographe "environement" (spécifique à l'API PayMooney)
+    params.append("first_name", name || "Client");
+    params.append("email", email); // Email récupéré du front
+    params.append("environment", "test"); // CORRIGÉ : deux 'n'
 
+    // 4. Appel à l'API PayMooney
     const response = await axios.post(
       "https://www.paymooney.com/api/v1.0/payment_url",
       params,
@@ -231,18 +239,20 @@ app.post("/api/payments/paymooney/init", async (req, res) => {
 
     if (response.data.response === "success") {
       res.json({
-        message: "URL générée",
         payment_url: response.data.payment_url,
         referenceId,
       });
     } else {
+      console.error("Refus PayMooney:", response.data);
       res
         .status(400)
         .json({ error: response.data.description || "Erreur PayMooney" });
     }
   } catch (error) {
-    console.error("Erreur Init Payment:", error);
-    res.status(500).json({ error: "Impossible d'initialiser le paiement" });
+    console.error("Erreur Init:", error.response?.data || error.message);
+    res
+      .status(500)
+      .json({ error: "Impossible de contacter l'opérateur de paiement" });
   }
 });
 
