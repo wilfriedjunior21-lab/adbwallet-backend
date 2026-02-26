@@ -681,10 +681,10 @@ app.patch("/api/admin/transactions/:id/reject", async (req, res) => {
   }
 });
 
-// Route pour obtenir les statistiques globales
-router.get("/stats", async (req, res) => {
+// Remplace 'router' par 'app' si tu es dans le fichier principal
+app.get("/api/admin/stats", async (req, res) => {
   try {
-    // .countDocuments() est la méthode la plus rapide pour compter
+    // Assure-toi que le modèle User est bien importé en haut du fichier
     const userCount = await User.countDocuments();
 
     res.json({
