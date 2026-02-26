@@ -221,7 +221,7 @@ app.post("/api/payments/paymooney/init", async (req, res) => {
     params.append("lang", "fr");
     params.append("first_name", name || "Utilisateur");
     params.append("email", email || "");
-    params.append("environement", "test"); // Attention à l'orthographe "environement" (spécifique à l'API PayMooney)
+    // params.append("environement", "test"); // Attention à l'orthographe "environement" (spécifique à l'API PayMooney)
 
     const response = await axios.post(
       "https://www.paymooney.com/api/v1.0/payment_url",
