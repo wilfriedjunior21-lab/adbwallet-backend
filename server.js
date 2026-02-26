@@ -4,8 +4,8 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const axios = require("axios");
-const { v4: uuidv4 } = require("uuid");
+const axios = require("axios"); // Déclaré UNE SEULE FOIS ici
+const { v4: uuidv4 } = require("uuid"); // Déclaré UNE SEULE FOIS ici
 const crypto = require("crypto");
 
 const app = express();
@@ -13,8 +13,10 @@ app.use(express.json());
 app.use(cors());
 
 // --- CONFIGURATION PAYMOONEY ---
-const PAYMOONEY_PUBLIC_KEY = "PK_d5M4k6BYZ1qaHegEJ8x7";
+const PAYMOONEY_PUBLIC_KEY =
+  process.env.PAYMOONEY_PUBLIC_KEY || "PK_d5M4k6BYZ1qaHegEJ8x7";
 const PAYMOONEY_PRIVATE_KEY =
+  process.env.PAYMOONEY_PRIVATE_KEY ||
   "SK_k3fUZ2N4QeK0jybeg3hUxAsYW7Q9B3K8Z9d7sAcaC9DuV8TaX1m0w7ryhaLa";
 
 // --- CONNEXION MONGODB ---
@@ -74,7 +76,7 @@ const transactionSchema = new mongoose.Schema({
     enum: ["en_attente", "valide", "rejete"],
     default: "valide",
   },
-  recipientPhone: { type: String, default: "" }, // <--- AJOUTÉ : Numéro de tel pour retrait
+  recipientPhone: { type: String, default: "" },
   date: { type: Date, default: Date.now },
   referenceId: { type: String },
   paymentId: { type: String },
@@ -187,15 +189,11 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-// --- INTEGRATION PAYMOONEY ---
-const axios = require("axios");
-const { v4: uuidv4 } = require("uuid");
-
+// --- INTEGRATION PAYMOONEY (CORRIGÉE) ---
 app.post("/api/payments/paymooney/init", async (req, res) => {
   try {
     const { userId, amount, email, name } = req.body;
 
-    // 1. Vérification des données entrantes
     if (!userId || !amount || !email) {
       return res.status(400).json({
         error:
@@ -205,7 +203,6 @@ app.post("/api/payments/paymooney/init", async (req, res) => {
 
     const referenceId = `PM-${uuidv4().substring(0, 8).toUpperCase()}`;
 
-    // 2. Sauvegarde de la transaction en attente (Logique existante)
     const newTx = new Transaction({
       userId,
       amount: Number(amount),
@@ -215,22 +212,17 @@ app.post("/api/payments/paymooney/init", async (req, res) => {
     });
     await newTx.save();
 
-    // 3. Préparation des paramètres pour PayMooney
     const params = new URLSearchParams();
     params.append("amount", amount.toString());
-    params.append("currency_code", "XAF"); // Paramètre standard
+    params.append("currency_code", "XAF");
     params.append("item_ref", referenceId);
     params.append("item_name", "Depot ADB Wallet");
-    params.append(
-      "public_key",
-      process.env.PAYMOONEY_PUBLIC_KEY || "PK_d5M4k6BYZ1qaHegEJ8x7"
-    );
+    params.append("public_key", PAYMOONEY_PUBLIC_KEY);
     params.append("lang", "fr");
     params.append("first_name", name || "Client");
-    params.append("email", email); // Email récupéré du front
-    params.append("environment", "test"); // CORRIGÉ : deux 'n'
+    params.append("email", email);
+    params.append("environment", "test"); // Orthographe corrigée
 
-    // 4. Appel à l'API PayMooney
     const response = await axios.post(
       "https://www.paymooney.com/api/v1.0/payment_url",
       params,
@@ -243,26 +235,20 @@ app.post("/api/payments/paymooney/init", async (req, res) => {
         referenceId,
       });
     } else {
-      console.error("Refus PayMooney:", response.data);
       res
         .status(400)
         .json({ error: response.data.description || "Erreur PayMooney" });
     }
   } catch (error) {
     console.error("Erreur Init:", error.response?.data || error.message);
-    res
-      .status(500)
-      .json({ error: "Impossible de contacter l'opérateur de paiement" });
+    res.status(500).json({ error: "Impossible d'initialiser le paiement" });
   }
 });
 
-// --- NOTIFICATION DE PAIEMENT (WEBHOOK) ---
 app.post("/api/payments/paymooney-notify", async (req, res) => {
   try {
-    // Note : PayMooney envoie parfois les données en query string ou en body selon la config
     const { status, item_reference, amount, transaction_id } = req.body;
-
-    console.log(`Notification reçue pour ${item_reference} : ${status}`);
+    console.log(`Notification PayMooney: ${item_reference} -> ${status}`);
 
     if (status?.toLowerCase() === "success") {
       const tx = await Transaction.findOne({
@@ -275,23 +261,19 @@ app.post("/api/payments/paymooney-notify", async (req, res) => {
         tx.paymentId = transaction_id;
         await tx.save();
 
-        // Créditer le solde de l'utilisateur
         await User.findByIdAndUpdate(tx.userId, {
           $inc: { balance: Number(amount) },
         });
 
-        // Notification interne
         await createNotify(
           tx.userId,
           "Dépôt Réussi",
           `Compte crédité de ${amount} F.`,
           "success"
         );
-
-        return res.status(200).send("OK");
       }
     }
-    res.status(200).send("OK"); // On répond OK même si c'est déjà traité pour stopper les relances
+    res.status(200).send("OK");
   } catch (error) {
     console.error("Erreur Webhook:", error);
     res.status(500).send("Erreur interne");
@@ -436,9 +418,8 @@ app.post("/api/transactions/buy", async (req, res) => {
   }
 });
 
-// --- ROUTE RETRAIT MODIFIÉE (AVEC NUMÉRO DE TÉLÉPHONE) ---
 app.post("/api/transactions/withdraw", async (req, res) => {
-  const { userId, amount, recipientPhone } = req.body; // <--- AJOUT : recipientPhone
+  const { userId, amount, recipientPhone } = req.body;
   try {
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
@@ -451,7 +432,7 @@ app.post("/api/transactions/withdraw", async (req, res) => {
     const withdrawTx = new Transaction({
       userId,
       amount: Number(amount),
-      recipientPhone: recipientPhone || "Non spécifié", // <--- ENREGISTREMENT
+      recipientPhone: recipientPhone || "Non spécifié",
       type: "retrait",
       status: "en_attente",
     });
@@ -715,15 +696,10 @@ app.patch("/api/admin/transactions/:id/reject", async (req, res) => {
   }
 });
 
-// Remplace 'router' par 'app' si tu es dans le fichier principal
 app.get("/api/admin/stats", async (req, res) => {
   try {
-    // Assure-toi que le modèle User est bien importé en haut du fichier
     const userCount = await User.countDocuments();
-
-    res.json({
-      totalUsers: userCount,
-    });
+    res.json({ totalUsers: userCount });
   } catch (error) {
     res.status(500).json({ message: "Erreur lors du comptage" });
   }
