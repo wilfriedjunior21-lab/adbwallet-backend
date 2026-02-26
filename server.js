@@ -188,11 +188,20 @@ app.post("/api/auth/login", async (req, res) => {
 });
 
 // --- INTEGRATION PAYMOONEY ---
-app.post("/api/transactions/paymooney/init", async (req, res) => {
+// --- INITIALISATION DU PAIEMENT ---
+// Changé 'transactions' en 'payments' pour la cohérence
+app.post("/api/payments/paymooney/init", async (req, res) => {
   try {
     const { userId, amount, email, name } = req.body;
+
+    // 1. Validation de base
+    if (!userId || !amount) {
+      return res.status(400).json({ error: "Données manquantes" });
+    }
+
     const referenceId = `PM-${uuidv4().substring(0, 8).toUpperCase()}`;
 
+    // 2. Création de la transaction en attente
     const newTx = new Transaction({
       userId,
       amount: Number(amount),
@@ -202,16 +211,17 @@ app.post("/api/transactions/paymooney/init", async (req, res) => {
     });
     await newTx.save();
 
+    // 3. Préparation des paramètres pour PayMooney
     const params = new URLSearchParams();
     params.append("amount", amount);
     params.append("currency_code", "XAF");
     params.append("item_ref", referenceId);
     params.append("item_name", "Dépôt ADB Wallet");
-    params.append("public_key", PAYMOONEY_PUBLIC_KEY);
+    params.append("public_key", process.env.PAYMOONEY_PUBLIC_KEY); // Utilise env
     params.append("lang", "fr");
     params.append("first_name", name || "Utilisateur");
     params.append("email", email || "");
-    params.append("environement", "test");
+    params.append("environement", "test"); // Attention à l'orthographe "environement" (spécifique à l'API PayMooney)
 
     const response = await axios.post(
       "https://www.paymooney.com/api/v1.0/payment_url",
@@ -231,36 +241,50 @@ app.post("/api/transactions/paymooney/init", async (req, res) => {
         .json({ error: response.data.description || "Erreur PayMooney" });
     }
   } catch (error) {
+    console.error("Erreur Init Payment:", error);
     res.status(500).json({ error: "Impossible d'initialiser le paiement" });
   }
 });
 
+// --- NOTIFICATION DE PAIEMENT (WEBHOOK) ---
 app.post("/api/payments/paymooney-notify", async (req, res) => {
   try {
+    // Note : PayMooney envoie parfois les données en query string ou en body selon la config
     const { status, item_reference, amount, transaction_id } = req.body;
-    if (status === "success" || status === "SUCCESS") {
+
+    console.log(`Notification reçue pour ${item_reference} : ${status}`);
+
+    if (status?.toLowerCase() === "success") {
       const tx = await Transaction.findOne({
         referenceId: item_reference,
         status: "en_attente",
       });
+
       if (tx) {
         tx.status = "valide";
         tx.paymentId = transaction_id;
         await tx.save();
+
+        // Créditer le solde de l'utilisateur
         await User.findByIdAndUpdate(tx.userId, {
           $inc: { balance: Number(amount) },
         });
+
+        // Notification interne
         await createNotify(
           tx.userId,
           "Dépôt Réussi",
           `Compte crédité de ${amount} F.`,
           "success"
         );
+
+        return res.status(200).send("OK");
       }
     }
-    res.status(200).send("OK");
+    res.status(200).send("OK"); // On répond OK même si c'est déjà traité pour stopper les relances
   } catch (error) {
-    res.status(500).send("Erreur");
+    console.error("Erreur Webhook:", error);
+    res.status(500).send("Erreur interne");
   }
 });
 
