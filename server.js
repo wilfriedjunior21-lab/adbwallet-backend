@@ -681,5 +681,19 @@ app.patch("/api/admin/transactions/:id/reject", async (req, res) => {
   }
 });
 
+// Route pour obtenir les statistiques globales
+router.get("/stats", async (req, res) => {
+  try {
+    // .countDocuments() est la méthode la plus rapide pour compter
+    const userCount = await User.countDocuments();
+
+    res.json({
+      totalUsers: userCount,
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Erreur lors du comptage" });
+  }
+});
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Serveur sur le port ${PORT}`));
