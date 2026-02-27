@@ -4,8 +4,8 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const axios = require("axios"); // Déclaré UNE SEULE FOIS ici
-const { v4: uuidv4 } = require("uuid"); // Déclaré UNE SEULE FOIS ici
+const axios = require("axios");
+const { v4: uuidv4 } = require("uuid");
 const crypto = require("crypto");
 
 const app = express();
@@ -59,6 +59,24 @@ const actionSchema = new mongoose.Schema({
     default: "en_attente",
   },
   creatorId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  createdAt: { type: Date, default: Date.now },
+});
+
+// NOUVEAU MODÈLE : OBLIGATIONS (BONDS)
+const bondSchema = new mongoose.Schema({
+  titre: { type: String, required: true },
+  montantCible: { type: Number, required: true },
+  tauxInteret: { type: Number, required: true },
+  dureeMois: { type: Number, required: true },
+  frequence: { type: String, required: true },
+  garantie: { type: Number, required: true },
+  description: String,
+  actionnaireId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  status: {
+    type: String,
+    enum: ["en_attente", "valide", "cloture"],
+    default: "en_attente",
+  },
   createdAt: { type: Date, default: Date.now },
 });
 
@@ -119,6 +137,7 @@ const messageSchema = new mongoose.Schema({
 
 const User = mongoose.model("User", userSchema);
 const Action = mongoose.model("Action", actionSchema);
+const Bond = mongoose.model("Bond", bondSchema); // Modèle Bond enregistré
 const Transaction = mongoose.model("Transaction", transactionSchema);
 const Notification = mongoose.model("Notification", notificationSchema);
 const Message = mongoose.model("Message", messageSchema);
@@ -189,7 +208,7 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-// --- INTEGRATION PAYMOONEY (CORRIGÉE) ---
+// --- INTEGRATION PAYMOONEY ---
 app.post("/api/payments/paymooney/init", async (req, res) => {
   try {
     const { userId, amount, email, name } = req.body;
@@ -221,7 +240,6 @@ app.post("/api/payments/paymooney/init", async (req, res) => {
     params.append("lang", "fr");
     params.append("first_name", name || "Client");
     params.append("email", email);
-    // params.append("environment", "test"); // Orthographe corrigée
 
     const response = await axios.post(
       "https://www.paymooney.com/api/v1.0/payment_url",
@@ -248,23 +266,18 @@ app.post("/api/payments/paymooney/init", async (req, res) => {
 app.post("/api/payments/paymooney-notify", async (req, res) => {
   try {
     const { status, item_reference, amount, transaction_id } = req.body;
-    console.log(`Notification PayMooney: ${item_reference} -> ${status}`);
-
     if (status?.toLowerCase() === "success") {
       const tx = await Transaction.findOne({
         referenceId: item_reference,
         status: "en_attente",
       });
-
       if (tx) {
         tx.status = "valide";
         tx.paymentId = transaction_id;
         await tx.save();
-
         await User.findByIdAndUpdate(tx.userId, {
           $inc: { balance: Number(amount) },
         });
-
         await createNotify(
           tx.userId,
           "Dépôt Réussi",
@@ -275,12 +288,11 @@ app.post("/api/payments/paymooney-notify", async (req, res) => {
     }
     res.status(200).send("OK");
   } catch (error) {
-    console.error("Erreur Webhook:", error);
     res.status(500).send("Erreur interne");
   }
 });
 
-// --- ROUTES UTILISATEURS & ACTIONS ---
+// --- ROUTES UTILISATEURS, ACTIONS & OBLIGATIONS ---
 app.get("/api/user/:id", async (req, res) => {
   try {
     const user = await User.findById(req.params.id).select("-password");
@@ -296,6 +308,42 @@ app.get("/api/users/:id/balance", async (req, res) => {
     res.json({ balance: user.balance || 0 });
   } catch (err) {
     res.status(500).json({ error: "Erreur solde" });
+  }
+});
+
+// ROUTES OBLIGATIONS (BONDS)
+app.post("/api/bonds/propose", async (req, res) => {
+  try {
+    const {
+      titre,
+      montantCible,
+      tauxInteret,
+      dureeMois,
+      frequence,
+      garantie,
+      description,
+      actionnaireId,
+    } = req.body;
+    const newBond = new Bond({
+      titre,
+      montantCible,
+      tauxInteret,
+      dureeMois,
+      frequence,
+      garantie,
+      description,
+      actionnaireId,
+    });
+    await newBond.save();
+    await createNotify(
+      actionnaireId,
+      "Obligation soumise",
+      `Votre projet d'obligation "${titre}" est en cours d'examen.`,
+      "info"
+    );
+    res.status(201).json({ message: "Proposition d'obligation envoyée" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -482,6 +530,55 @@ app.get("/api/admin/users", async (req, res) => {
 app.get("/api/admin/actions", async (req, res) => {
   const actions = await Action.find().sort({ createdAt: -1 });
   res.json(actions);
+});
+
+// ROUTES ADMIN POUR LES OBLIGATIONS
+app.get("/api/admin/bonds", async (req, res) => {
+  try {
+    const bonds = await Bond.find()
+      .populate("actionnaireId", "name email")
+      .sort({ createdAt: -1 });
+    res.json(bonds);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur de récupération des obligations" });
+  }
+});
+
+app.patch("/api/admin/bonds/:id/validate", async (req, res) => {
+  try {
+    const bond = await Bond.findByIdAndUpdate(
+      req.params.id,
+      { status: "valide" },
+      { new: true }
+    );
+    await createNotify(
+      bond.actionnaireId,
+      "Obligation Validée",
+      `Votre obligation "${bond.titre}" est maintenant active sur le marché.`,
+      "success"
+    );
+    res.json({ message: "Obligation validée avec succès" });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur validation" });
+  }
+});
+
+app.delete("/api/admin/bonds/:id", async (req, res) => {
+  try {
+    const bond = await Bond.findById(req.params.id);
+    if (bond) {
+      await createNotify(
+        bond.actionnaireId,
+        "Obligation Rejetée",
+        `Votre projet "${bond.titre}" a été refusé.`,
+        "warning"
+      );
+      await Bond.findByIdAndDelete(req.params.id);
+    }
+    res.json({ message: "Obligation supprimée" });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur suppression" });
+  }
 });
 
 app.patch("/api/admin/actions/:id/validate", async (req, res) => {
@@ -682,7 +779,7 @@ app.patch("/api/admin/transactions/:id/reject", async (req, res) => {
     await createNotify(
       user._id,
       "Retrait refusé",
-      `Retrait de ${transaction.amount} F refusé (Num: ${transaction.recipientPhone}). Balance créditée.`,
+      `Retrait de ${transaction.amount} F refusé. Balance créditée.`,
       "retrait"
     );
     await user.save();
