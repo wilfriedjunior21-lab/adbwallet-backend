@@ -802,5 +802,61 @@ app.get("/api/admin/stats", async (req, res) => {
   }
 });
 
+// Admin : Créer une Action directement
+app.post("/api/admin/actions/create", async (req, res) => {
+  try {
+    const { name, price, totalQuantity, description } = req.body;
+    const newAction = new Action({
+      name,
+      price,
+      totalQuantity,
+      availableQuantity: totalQuantity,
+      description,
+      status: "valide", // Directement valide
+      creatorId: null, // null ou l'ID de l'admin
+    });
+    await newAction.save();
+    res.status(201).json({ message: "Action créée par l'admin" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin : Créer une Obligation directement
+app.post("/api/admin/bonds/create", async (req, res) => {
+  try {
+    const {
+      titre,
+      montantCible,
+      tauxInteret,
+      dureeMois,
+      frequence,
+      garantie,
+      description,
+    } = req.body;
+    const newBond = new Bond({
+      titre,
+      montantCible,
+      tauxInteret,
+      dureeMois,
+      frequence,
+      garantie,
+      description,
+      status: "valide", // Directement valide
+      actionnaireId: null,
+    });
+    await newBond.save();
+    res.status(201).json({ message: "Obligation créée par l'admin" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Route pour que les utilisateurs voient les obligations
+app.get("/api/bonds", async (req, res) => {
+  const bonds = await Bond.find({ status: "valide" });
+  res.json(bonds);
+});
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Serveur sur le port ${PORT}`));
