@@ -16,7 +16,7 @@ app.use(
     origin: [
       "http://localhost:3000",
       "http://127.0.0.1:3000",
-      "https://adbwallet-backend.onrender.com", // <-- AJOUTE TON URL FRONTEND RENDER ICI
+      "https://adbwallet-frontend.netlify.app", // <-- AJOUTE TON URL FRONTEND RENDER ICI
     ],
     methods: ["GET", "POST", "PATCH", "PUT", "DELETE"],
     credentials: true,
