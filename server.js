@@ -6,11 +6,18 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const { v4: uuidv4 } = require("uuid");
-const crypto = require("crypto");
 
 const app = express();
 app.use(express.json());
-app.use(cors());
+
+// --- CONFIGURATION CORS AMÉLIORÉE ---
+app.use(
+  cors({
+    origin: "*", // Autorise toutes les origines pour éviter les blocages reseau
+    methods: ["GET", "POST", "PATCH", "PUT", "DELETE"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 
 // --- CONFIGURATION PAYMOONEY ---
 const PAYMOONEY_PUBLIC_KEY =
@@ -62,7 +69,6 @@ const actionSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 
-// NOUVEAU MODÈLE : OBLIGATIONS (BONDS)
 const bondSchema = new mongoose.Schema({
   titre: { type: String, required: true },
   montantCible: { type: Number, required: true },
@@ -95,6 +101,7 @@ const transactionSchema = new mongoose.Schema({
     default: "valide",
   },
   recipientPhone: { type: String, default: "" },
+  paymentNumber: { type: String, default: "" }, // Ajouté pour compatibilité Retraits
   date: { type: Date, default: Date.now },
   referenceId: { type: String },
   paymentId: { type: String },
@@ -137,12 +144,12 @@ const messageSchema = new mongoose.Schema({
 
 const User = mongoose.model("User", userSchema);
 const Action = mongoose.model("Action", actionSchema);
-const Bond = mongoose.model("Bond", bondSchema); // Modèle Bond enregistré
+const Bond = mongoose.model("Bond", bondSchema);
 const Transaction = mongoose.model("Transaction", transactionSchema);
 const Notification = mongoose.model("Notification", notificationSchema);
 const Message = mongoose.model("Message", messageSchema);
 
-// --- FONCTION UTILITAIRE NOTIFICATIONS ---
+// --- FONCTIONS ET MOTEUR ---
 const createNotify = async (userId, title, message, type = "info") => {
   try {
     const notify = new Notification({ userId, title, message, type });
@@ -152,7 +159,6 @@ const createNotify = async (userId, title, message, type = "info") => {
   }
 };
 
-// --- MOTEUR DE MARCHÉ ---
 const startMarketEngine = () => {
   console.log("🚀 Moteur de Marché activé (cycle: 30 min)");
   setInterval(async () => {
@@ -170,7 +176,7 @@ const startMarketEngine = () => {
   }, 30 * 60 * 1000);
 };
 
-// --- ROUTES AUTHENTIFICATION ---
+// --- ROUTES AUTH ---
 app.post("/api/auth/register", async (req, res) => {
   try {
     const { name, email, password, role } = req.body;
@@ -201,65 +207,48 @@ app.post("/api/auth/login", async (req, res) => {
       role: user.role,
       name: user.name,
       email: user.email,
-      message: "Connexion réussie",
     });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
 
-// --- INTEGRATION PAYMOONEY ---
+// --- PAYMOONEY ---
 app.post("/api/payments/paymooney/init", async (req, res) => {
   try {
     const { userId, amount, email, name } = req.body;
-
-    if (!userId || !amount || !email) {
-      return res.status(400).json({
-        error:
-          "Données manquantes. L'email, le montant et l'ID utilisateur sont obligatoires.",
-      });
-    }
-
     const referenceId = `PM-${uuidv4().substring(0, 8).toUpperCase()}`;
-
     const newTx = new Transaction({
       userId,
       amount: Number(amount),
       type: "depot",
       status: "en_attente",
-      referenceId: referenceId,
+      referenceId,
     });
     await newTx.save();
 
-    const params = new URLSearchParams();
-    params.append("amount", amount.toString());
-    params.append("currency_code", "XAF");
-    params.append("item_ref", referenceId);
-    params.append("item_name", "Depot ADB Wallet");
-    params.append("public_key", PAYMOONEY_PUBLIC_KEY);
-    params.append("lang", "fr");
-    params.append("first_name", name || "Client");
-    params.append("email", email);
+    const params = new URLSearchParams({
+      amount: amount.toString(),
+      currency_code: "XAF",
+      item_ref: referenceId,
+      item_name: "Depot ADB Wallet",
+      public_key: PAYMOONEY_PUBLIC_KEY,
+      lang: "fr",
+      first_name: name || "Client",
+      email: email,
+    });
 
     const response = await axios.post(
       "https://www.paymooney.com/api/v1.0/payment_url",
-      params,
-      { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+      params
     );
-
     if (response.data.response === "success") {
-      res.json({
-        payment_url: response.data.payment_url,
-        referenceId,
-      });
+      res.json({ payment_url: response.data.payment_url, referenceId });
     } else {
-      res
-        .status(400)
-        .json({ error: response.data.description || "Erreur PayMooney" });
+      res.status(400).json({ error: response.data.description });
     }
   } catch (error) {
-    console.error("Erreur Init:", error.response?.data || error.message);
-    res.status(500).json({ error: "Impossible d'initialiser le paiement" });
+    res.status(500).json({ error: "Erreur Paymooney Init" });
   }
 });
 
@@ -288,17 +277,17 @@ app.post("/api/payments/paymooney-notify", async (req, res) => {
     }
     res.status(200).send("OK");
   } catch (error) {
-    res.status(500).send("Erreur interne");
+    res.status(500).send("Erreur Notify");
   }
 });
 
-// --- ROUTES UTILISATEURS, ACTIONS & OBLIGATIONS ---
+// --- ROUTES CORE ---
 app.get("/api/user/:id", async (req, res) => {
   try {
     const user = await User.findById(req.params.id).select("-password");
     res.json(user);
   } catch (err) {
-    res.status(404).json({ error: "Utilisateur non trouvé" });
+    res.status(404).json({ error: "Non trouvé" });
   }
 });
 
@@ -311,37 +300,18 @@ app.get("/api/users/:id/balance", async (req, res) => {
   }
 });
 
-// ROUTES OBLIGATIONS (BONDS)
+// --- OBLIGATIONS (BONDS) ---
 app.post("/api/bonds/propose", async (req, res) => {
   try {
-    const {
-      titre,
-      montantCible,
-      tauxInteret,
-      dureeMois,
-      frequence,
-      garantie,
-      description,
-      actionnaireId,
-    } = req.body;
-    const newBond = new Bond({
-      titre,
-      montantCible,
-      tauxInteret,
-      dureeMois,
-      frequence,
-      garantie,
-      description,
-      actionnaireId,
-    });
+    const newBond = new Bond(req.body);
     await newBond.save();
     await createNotify(
-      actionnaireId,
+      req.body.actionnaireId,
       "Obligation soumise",
-      `Votre projet d'obligation "${titre}" est en cours d'examen.`,
+      `Projet "${req.body.titre}" en examen.`,
       "info"
     );
-    res.status(201).json({ message: "Proposition d'obligation envoyée" });
+    res.status(201).json({ message: "Envoyé" });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -349,44 +319,19 @@ app.post("/api/bonds/propose", async (req, res) => {
 
 app.get("/api/actions", async (req, res) => {
   try {
-    const actions = await Action.find({ status: "valide" });
-    res.json(actions);
+    res.json(await Action.find({ status: "valide" }));
   } catch (err) {
-    res.status(500).json({ error: "Erreur marché" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
-app.post("/api/actions/propose", async (req, res) => {
-  try {
-    const { name, price, totalQuantity, description, creatorId } = req.body;
-    const newAction = new Action({
-      name,
-      price,
-      totalQuantity,
-      availableQuantity: totalQuantity,
-      description,
-      creatorId,
-      status: "en_attente",
-    });
-    await newAction.save();
-    await createNotify(
-      creatorId,
-      "Proposition envoyée",
-      `Projet ${name} en attente.`,
-      "info"
-    );
-    res.status(201).json({ message: "Proposition envoyée" });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
+// --- TRANSACTIONS ---
 app.get("/api/transactions/user/:userId", async (req, res) => {
   try {
-    const transactions = await Transaction.find({ userId: req.params.userId })
+    const txs = await Transaction.find({ userId: req.params.userId })
       .populate("actionId")
       .sort({ date: -1 });
-    res.json(transactions);
+    res.json(txs);
   } catch (err) {
     res.status(500).json({ error: "Erreur" });
   }
@@ -399,12 +344,8 @@ app.post("/api/transactions/buy", async (req, res) => {
   try {
     const user = await User.findById(userId).session(session);
     const action = await Action.findById(actionId).session(session);
-    if (!action || action.status !== "valide")
-      throw new Error("Action non disponible");
-
+    if (!action || action.status !== "valide") throw new Error("Invalide");
     const totalCost = action.price * quantity;
-    const sellerId = action.creatorId;
-
     if (user.balance < totalCost) throw new Error("Solde insuffisant");
     if (action.availableQuantity < quantity)
       throw new Error("Parts insuffisantes");
@@ -412,20 +353,14 @@ app.post("/api/transactions/buy", async (req, res) => {
     user.balance -= totalCost;
     await user.save({ session });
 
-    if (sellerId) {
+    if (action.creatorId) {
       await User.findByIdAndUpdate(
-        sellerId,
+        action.creatorId,
         { $inc: { balance: totalCost } },
         { session }
       );
-      await createNotify(
-        sellerId,
-        "Vente réussie !",
-        `Reçu ${totalCost} F pour ${action.name}.`,
-        "success"
-      );
       const sellerTx = new Transaction({
-        userId: sellerId,
+        userId: action.creatorId,
         actionId,
         quantity,
         amount: totalCost,
@@ -435,8 +370,9 @@ app.post("/api/transactions/buy", async (req, res) => {
       await sellerTx.save({ session });
     }
 
-    const priceHike = action.price * (0.0005 * quantity);
-    action.price = Math.round(action.price + priceHike);
+    action.price = Math.round(
+      action.price + action.price * (0.0005 * quantity)
+    );
     action.availableQuantity -= quantity;
     await action.save({ session });
 
@@ -450,14 +386,8 @@ app.post("/api/transactions/buy", async (req, res) => {
     });
     await buyerTx.save({ session });
 
-    await createNotify(
-      userId,
-      "Achat réussi",
-      `Acquisition de ${quantity} parts de ${action.name}.`,
-      "success"
-    );
     await session.commitTransaction();
-    res.json({ message: "Achat réussi !", newBalance: user.balance });
+    res.json({ message: "Succès", newBalance: user.balance });
   } catch (err) {
     await session.abortTransaction();
     res.status(500).json({ error: err.message });
@@ -470,336 +400,156 @@ app.post("/api/transactions/withdraw", async (req, res) => {
   const { userId, amount, recipientPhone } = req.body;
   try {
     const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
     if (user.balance < amount)
-      return res.status(400).json({ error: "Solde insuffisant" });
-
+      return res.status(400).json({ error: "Insuffisant" });
     user.balance -= Number(amount);
     await user.save();
-
-    const withdrawTx = new Transaction({
+    const tx = new Transaction({
       userId,
       amount: Number(amount),
-      recipientPhone: recipientPhone || "Non spécifié",
+      recipientPhone,
       type: "retrait",
       status: "en_attente",
     });
-    await withdrawTx.save();
-
-    await createNotify(
-      userId,
-      "Demande de retrait",
-      `Demande de ${amount} F via ${recipientPhone} envoyée.`,
-      "info"
-    );
-    res.json({ message: "Demande enregistrée", newBalance: user.balance });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur retrait" });
-  }
-});
-
-app.get("/api/notifications/:userId", async (req, res) => {
-  try {
-    const notifies = await Notification.find({ userId: req.params.userId })
-      .sort({ date: -1 })
-      .limit(15);
-    res.json(notifies);
+    await tx.save();
+    res.json({ message: "Demande reçue", newBalance: user.balance });
   } catch (err) {
     res.status(500).json({ error: "Erreur" });
   }
 });
 
-app.patch("/api/notifications/mark-read", async (req, res) => {
+// --- MESSAGERIE (CORRIGÉ POUR ÉVITER LES 404) ---
+app.get("/api/messages/owner/:userId", async (req, res) => {
   try {
-    await Notification.updateMany(
-      { userId: req.body.userId, read: false },
-      { read: true }
-    );
-    res.json({ message: "Marqué comme lu" });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
-// --- ROUTES ADMIN ---
-app.get("/api/admin/users", async (req, res) => {
-  const users = await User.find().select("-password");
-  res.json(users);
-});
-
-app.get("/api/admin/actions", async (req, res) => {
-  const actions = await Action.find().sort({ createdAt: -1 });
-  res.json(actions);
-});
-
-// ROUTES ADMIN POUR LES OBLIGATIONS
-app.get("/api/admin/bonds", async (req, res) => {
-  try {
-    const bonds = await Bond.find()
-      .populate("actionnaireId", "name email")
+    const msgs = await Message.find({ receiverId: req.params.userId })
+      .populate("senderId", "name")
+      .populate("actionId", "name")
       .sort({ createdAt: -1 });
-    res.json(bonds);
+    res.json(msgs);
   } catch (err) {
-    res.status(500).json({ error: "Erreur de récupération des obligations" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
-app.patch("/api/admin/bonds/:id/validate", async (req, res) => {
+app.post("/api/messages/send", async (req, res) => {
   try {
-    const bond = await Bond.findByIdAndUpdate(
-      req.params.id,
-      { status: "valide" },
-      { new: true }
-    );
+    const msg = new Message(req.body);
+    await msg.save();
     await createNotify(
-      bond.actionnaireId,
-      "Obligation Validée",
-      `Votre obligation "${bond.titre}" est maintenant active sur le marché.`,
-      "success"
+      req.body.receiverId,
+      "Nouveau message",
+      "Vous avez une question sur un actif."
     );
-    res.json({ message: "Obligation validée avec succès" });
+    res.status(201).json(msg);
   } catch (err) {
-    res.status(500).json({ error: "Erreur validation" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
-app.delete("/api/admin/bonds/:id", async (req, res) => {
-  try {
-    const bond = await Bond.findById(req.params.id);
-    if (bond) {
-      await createNotify(
-        bond.actionnaireId,
-        "Obligation Rejetée",
-        `Votre projet "${bond.titre}" a été refusé.`,
-        "warning"
-      );
-      await Bond.findByIdAndDelete(req.params.id);
-    }
-    res.json({ message: "Obligation supprimée" });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur suppression" });
-  }
+// --- ADMIN ROUTES ---
+app.get("/api/admin/users", async (req, res) =>
+  res.json(await User.find().select("-password"))
+);
+app.get("/api/admin/actions", async (req, res) =>
+  res.json(await Action.find().sort({ createdAt: -1 }))
+);
+app.get("/api/admin/bonds", async (req, res) =>
+  res.json(
+    await Bond.find()
+      .populate("actionnaireId", "name email")
+      .sort({ createdAt: -1 })
+  )
+);
+app.get("/api/admin/transactions", async (req, res) =>
+  res.json(await Transaction.find().populate("userId").sort({ date: -1 }))
+);
+
+app.patch("/api/admin/kyc/:id", async (req, res) => {
+  await User.findByIdAndUpdate(req.params.id, { kycStatus: req.body.status });
+  res.json({ message: "Statut mis à jour" });
 });
 
 app.patch("/api/admin/actions/:id/validate", async (req, res) => {
-  try {
-    const action = await Action.findByIdAndUpdate(
-      req.params.id,
-      { status: "valide" },
-      { new: true }
-    );
-    await createNotify(
-      action.creatorId,
-      "Action publiée !",
-      `${action.name} est en vente.`,
-      "success"
-    );
-    const acheteurs = await User.find({ role: "acheteur" });
-    for (let ach of acheteurs) {
-      await createNotify(
-        ach._id,
-        "Nouvelle opportunité",
-        `${action.name} est disponible !`,
-        "info"
-      );
-    }
-    res.json({ message: "Action publiée" });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
+  const action = await Action.findByIdAndUpdate(
+    req.params.id,
+    { status: "valide" },
+    { new: true }
+  );
+  await createNotify(
+    action.creatorId,
+    "Action Validée",
+    `${action.name} est en vente !`,
+    "success"
+  );
+  res.json({ message: "Validée" });
 });
 
-app.get("/api/admin/transactions", async (req, res) => {
-  try {
-    const transactions = await Transaction.find()
-      .populate("userId")
-      .sort({ date: -1 });
-    res.json(transactions);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
+app.patch("/api/admin/bonds/:id/validate", async (req, res) => {
+  const bond = await Bond.findByIdAndUpdate(
+    req.params.id,
+    { status: "valide" },
+    { new: true }
+  );
+  await createNotify(
+    bond.actionnaireId,
+    "Obligation Validée",
+    "Votre projet est actif.",
+    "success"
+  );
+  res.json({ message: "Validée" });
+});
+
+app.delete("/api/admin/bonds/:id", async (req, res) => {
+  await Bond.findByIdAndDelete(req.params.id);
+  res.json({ message: "Supprimée" });
+});
+
+app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
+  const tx = await Transaction.findById(req.params.id);
+  tx.status = "valide";
+  await tx.save();
+  if (tx.type === "depot")
+    await User.findByIdAndUpdate(tx.userId, { $inc: { balance: tx.amount } });
+  res.json({ message: "Validée" });
+});
+
+app.patch("/api/admin/transactions/:id/reject", async (req, res) => {
+  const tx = await Transaction.findById(req.params.id);
+  if (tx.type === "retrait")
+    await User.findByIdAndUpdate(tx.userId, { $inc: { balance: tx.amount } });
+  tx.status = "rejete";
+  tx.comment = req.body.reason;
+  await tx.save();
+  res.json({ message: "Rejeté" });
 });
 
 app.post("/api/admin/distribute-dividends", async (req, res) => {
   const { actionId, amountPerShare } = req.body;
-  try {
-    const action = await Action.findById(actionId);
-    const purchases = await Transaction.find({
+  const purchases = await Transaction.find({
+    actionId,
+    type: "achat",
+    status: "valide",
+  });
+  for (let tx of purchases) {
+    const div = tx.quantity * amountPerShare;
+    await User.findByIdAndUpdate(tx.userId, { $inc: { balance: div } });
+    await new Transaction({
+      userId: tx.userId,
       actionId,
-      type: "achat",
+      amount: div,
+      type: "dividende",
       status: "valide",
-    });
-    for (let tx of purchases) {
-      const divAmount = tx.quantity * amountPerShare;
-      await User.findByIdAndUpdate(tx.userId, { $inc: { balance: divAmount } });
-      const divTx = new Transaction({
-        userId: tx.userId,
-        actionId: action._id,
-        amount: divAmount,
-        quantity: tx.quantity,
-        type: "dividende",
-        status: "valide",
-      });
-      await divTx.save();
-      await createNotify(
-        tx.userId,
-        "Dividendes !",
-        `${divAmount} F reçus pour ${action.name}.`,
-        "success"
-      );
-    }
-    res.json({ message: `Dividendes distribués` });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
+    }).save();
   }
+  res.json({ message: "Distribués" });
 });
 
-app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
-  try {
-    const tx = await Transaction.findById(req.params.id);
-    if (!tx || tx.status === "valide")
-      return res.status(400).json({ error: "Invalide" });
-    tx.status = "valide";
-    await tx.save();
-    if (tx.type === "depot") {
-      await User.findByIdAndUpdate(tx.userId, { $inc: { balance: tx.amount } });
-    }
-    res.json({ message: "Transaction validée" });
-  } catch (error) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
-app.patch("/api/actions/:id", async (req, res) => {
-  try {
-    const { price, description } = req.body;
-    const updatedAction = await Action.findByIdAndUpdate(
-      req.params.id,
-      { price: Number(price), description },
-      { new: true }
-    );
-    res.json(updatedAction);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur mise à jour" });
-  }
-});
-
-// --- MESSAGERIE ---
-app.post("/api/messages/send", async (req, res) => {
-  try {
-    const { actionId, senderId, receiverId, content } = req.body;
-    const newMessage = new Message({ actionId, senderId, receiverId, content });
-    await newMessage.save();
-    await createNotify(
-      receiverId,
-      "Nouvelle question",
-      `Question sur votre actif.`,
-      "info"
-    );
-    res.status(201).json(newMessage);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
-app.get("/api/messages/owner/:userId", async (req, res) => {
-  try {
-    const messages = await Message.find({ receiverId: req.params.userId })
-      .populate("senderId", "name")
-      .populate("actionId", "name")
-      .sort({ createdAt: -1 });
-    res.json(messages);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
-app.get("/api/messages/buyer/:userId", async (req, res) => {
-  try {
-    const messages = await Message.find({ senderId: req.params.userId })
-      .populate("actionId", "name")
-      .populate("receiverId", "name")
-      .sort({ createdAt: 1 });
-    res.json(messages);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
-app.get("/api/messages/chat/:actionId/:userId", async (req, res) => {
-  try {
-    const messages = await Message.find({
-      actionId: req.params.actionId,
-      $or: [{ senderId: req.params.userId }, { receiverId: req.params.userId }],
-    }).sort({ createdAt: 1 });
-    res.json(messages);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
-app.patch("/api/messages/reply/:messageId", async (req, res) => {
-  try {
-    const { reply } = req.body;
-    const message = await Message.findByIdAndUpdate(
-      req.params.messageId,
-      { reply },
-      { new: true }
-    );
-    await createNotify(
-      message.senderId,
-      "Réponse reçue",
-      `L'actionnaire a répondu.`,
-      "success"
-    );
-    res.json(message);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
-app.patch("/api/admin/transactions/:id/reject", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { reason } = req.body;
-    const transaction = await Transaction.findById(id);
-    if (!transaction)
-      return res.status(404).json({ error: "Transaction introuvable" });
-    if (transaction.status !== "en_attente")
-      return res.status(400).json({ error: "Déjà traitée" });
-
-    const user = await User.findById(transaction.userId);
-    if (!user)
-      return res.status(404).json({ error: "Utilisateur introuvable" });
-
-    user.balance = (user.balance || 0) + transaction.amount;
-    transaction.status = "rejete";
-    transaction.comment = reason || "Retrait refusé par l'administrateur";
-
-    await createNotify(
-      user._id,
-      "Retrait refusé",
-      `Retrait de ${transaction.amount} F refusé. Balance créditée.`,
-      "retrait"
-    );
-    await user.save();
-    await transaction.save();
-    res.json({
-      message: "Retrait refusé et utilisateur recrédité",
-      newBalance: user.balance,
-    });
-  } catch (error) {
-    res.status(500).json({ error: "Erreur serveur" });
-  }
-});
-
-app.get("/api/admin/stats", async (req, res) => {
-  try {
-    const userCount = await User.countDocuments();
-    res.json({ totalUsers: userCount });
-  } catch (error) {
-    res.status(500).json({ message: "Erreur lors du comptage" });
-  }
+app.get("/api/notifications/:userId", async (req, res) => {
+  res.json(
+    await Notification.find({ userId: req.params.userId })
+      .sort({ date: -1 })
+      .limit(15)
+  );
 });
 
 const PORT = process.env.PORT || 5000;
