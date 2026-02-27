@@ -10,11 +10,14 @@ const crypto = require("crypto");
 
 const app = express();
 
-// --- CONFIGURATION CORS (CORRIGÉ) ---
-// On autorise explicitement ton frontend (localhost:3000)
+// --- CONFIGURATION CORS (CORRIGÉ POUR RENDER) ---
 app.use(
   cors({
-    origin: ["http://localhost:3000", "http://127.0.0.1:3000"],
+    origin: [
+      "http://localhost:3000",
+      "http://127.0.0.1:3000",
+      "https://adbwallet-backend.onrender.com", // <-- AJOUTE TON URL FRONTEND RENDER ICI
+    ],
     methods: ["GET", "POST", "PATCH", "PUT", "DELETE"],
     credentials: true,
   })
