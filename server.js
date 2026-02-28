@@ -13,7 +13,7 @@ app.use(express.json());
 // --- CONFIGURATION CORS ---
 app.use(
   cors({
-    origin: "adbwallet-frontend.pages.dev",
+    origin: "*",
     methods: ["GET", "POST", "PATCH", "PUT", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
