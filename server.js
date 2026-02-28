@@ -328,6 +328,60 @@ app.get("/api/bonds", async (req, res) => {
   }
 });
 
+// --- SOUSCRIRE À UNE OBLIGATION (INVESTIR) ---
+app.post("/api/transactions/subscribe-bond", async (req, res) => {
+  const { userId, bondId, amount } = req.body;
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const user = await User.findById(userId).session(session);
+    const bond = await Bond.findById(bondId).session(session);
+
+    if (!bond || bond.status !== "valide") {
+      throw new Error("Cette obligation n'est pas disponible.");
+    }
+
+    if (user.balance < amount) {
+      throw new Error("Solde insuffisant pour cet investissement.");
+    }
+
+    // 1. Déduire le montant du solde de l'utilisateur
+    user.balance -= Number(amount);
+    await user.save({ session });
+
+    // 2. Créer la transaction d'achat d'obligation
+    const bondTx = new Transaction({
+      userId,
+      amount: Number(amount),
+      type: "achat", // ou "investissement" si tu veux créer un nouveau type
+      status: "valide",
+      comment: `Souscription à l'obligation : ${bond.titre}`,
+      date: new Date(),
+    });
+    await bondTx.save({ session });
+
+    // 3. Notifier l'utilisateur
+    await createNotify(
+      userId,
+      "Investissement confirmé",
+      `Vous avez investi ${amount} F dans ${bond.titre}.`,
+      "success"
+    );
+
+    await session.commitTransaction();
+    res.json({
+      message: "Souscription réussie",
+      newBalance: user.balance,
+    });
+  } catch (err) {
+    await session.abortTransaction();
+    res.status(400).json({ error: err.message });
+  } finally {
+    session.endSession();
+  }
+});
+
 // --- ACTIONS ---
 app.get("/api/actions", async (req, res) => {
   try {
