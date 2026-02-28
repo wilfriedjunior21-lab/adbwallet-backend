@@ -331,6 +331,16 @@ app.get("/api/bonds", async (req, res) => {
 // --- SOUSCRIRE À UNE OBLIGATION (INVESTIR) ---
 app.post("/api/transactions/subscribe-bond", async (req, res) => {
   const { userId, bondId, amount } = req.body;
+
+  // 1. Forcer la conversion et vérifier si c'est un nombre valide
+  const numericAmount = parseFloat(amount);
+
+  if (isNaN(numericAmount) || numericAmount <= 0) {
+    return res
+      .status(400)
+      .json({ error: "Le montant investi n'est pas un nombre valide." });
+  }
+
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -338,42 +348,43 @@ app.post("/api/transactions/subscribe-bond", async (req, res) => {
     const user = await User.findById(userId).session(session);
     const bond = await Bond.findById(bondId).session(session);
 
-    if (!bond || bond.status !== "valide") {
-      throw new Error("Cette obligation n'est pas disponible.");
+    if (!user) throw new Error("Utilisateur introuvable.");
+    if (!bond) throw new Error("Obligation introuvable.");
+
+    // 2. Initialiser le solde à 0 si par défaut il est mal défini (évite le NaN)
+    const currentBalance = typeof user.balance === "number" ? user.balance : 0;
+
+    if (currentBalance < numericAmount) {
+      throw new Error(`Solde insuffisant (${currentBalance} F).`);
     }
 
-    if (user.balance < amount) {
-      throw new Error("Solde insuffisant pour cet investissement.");
-    }
+    // 3. Calcul du nouveau solde
+    user.balance = currentBalance - numericAmount;
 
-    // 1. Déduire le montant du solde de l'utilisateur
-    user.balance -= Number(amount);
+    // On force la validation avant de sauvegarder
     await user.save({ session });
 
-    // 2. Créer la transaction d'achat d'obligation
     const bondTx = new Transaction({
       userId,
-      amount: Number(amount),
-      type: "achat", // ou "investissement" si tu veux créer un nouveau type
+      amount: numericAmount,
+      type: "achat",
       status: "valide",
-      comment: `Souscription à l'obligation : ${bond.titre}`,
+      comment: `Investissement : ${bond.titre}`,
       date: new Date(),
     });
     await bondTx.save({ session });
 
-    // 3. Notifier l'utilisateur
     await createNotify(
       userId,
-      "Investissement confirmé",
-      `Vous avez investi ${amount} F dans ${bond.titre}.`,
+      "Investissement validé",
+      `Vous avez investi ${numericAmount.toLocaleString()} F dans ${
+        bond.titre
+      }.`,
       "success"
     );
 
     await session.commitTransaction();
-    res.json({
-      message: "Souscription réussie",
-      newBalance: user.balance,
-    });
+    res.json({ message: "Souscription réussie", newBalance: user.balance });
   } catch (err) {
     await session.abortTransaction();
     res.status(400).json({ error: err.message });
@@ -381,7 +392,6 @@ app.post("/api/transactions/subscribe-bond", async (req, res) => {
     session.endSession();
   }
 });
-
 // --- ACTIONS ---
 app.get("/api/actions", async (req, res) => {
   try {
