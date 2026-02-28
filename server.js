@@ -10,10 +10,10 @@ const { v4: uuidv4 } = require("uuid");
 const app = express();
 app.use(express.json());
 
-// --- CONFIGURATION CORS AMÉLIORÉE ---
+// --- CONFIGURATION CORS ---
 app.use(
   cors({
-    origin: "*", // Autorise toutes les origines pour éviter les blocages reseau
+    origin: "*",
     methods: ["GET", "POST", "PATCH", "PUT", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
@@ -101,7 +101,7 @@ const transactionSchema = new mongoose.Schema({
     default: "valide",
   },
   recipientPhone: { type: String, default: "" },
-  paymentNumber: { type: String, default: "" }, // Ajouté pour compatibilité Retraits
+  paymentNumber: { type: String, default: "" },
   date: { type: Date, default: Date.now },
   referenceId: { type: String },
   paymentId: { type: String },
@@ -301,6 +301,7 @@ app.get("/api/users/:id/balance", async (req, res) => {
 });
 
 // --- OBLIGATIONS (BONDS) ---
+// Route pour proposer (Déjà existante)
 app.post("/api/bonds/propose", async (req, res) => {
   try {
     const newBond = new Bond(req.body);
@@ -317,9 +318,23 @@ app.post("/api/bonds/propose", async (req, res) => {
   }
 });
 
+// NOUVELLE ROUTE : Pour afficher les obligations validées aux acheteurs (Evite la 404)
+app.get("/api/bonds", async (req, res) => {
+  try {
+    const bonds = await Bond.find({ status: "valide" }).sort({ createdAt: -1 });
+    res.json(bonds);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur récupération obligations" });
+  }
+});
+
+// --- ACTIONS ---
 app.get("/api/actions", async (req, res) => {
   try {
-    res.json(await Action.find({ status: "valide" }));
+    // Populate creatorId pour permettre la messagerie entre acheteur et vendeur
+    res.json(
+      await Action.find({ status: "valide" }).populate("creatorId", "name")
+    );
   } catch (err) {
     res.status(500).json({ error: "Erreur" });
   }
@@ -418,7 +433,7 @@ app.post("/api/transactions/withdraw", async (req, res) => {
   }
 });
 
-// --- MESSAGERIE (CORRIGÉ POUR ÉVITER LES 404) ---
+// --- MESSAGERIE ---
 app.get("/api/messages/owner/:userId", async (req, res) => {
   try {
     const msgs = await Message.find({ receiverId: req.params.userId })
