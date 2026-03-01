@@ -20,7 +20,9 @@ app.use(
   })
 );
 
-// --- 1. CONFIGURATION CLOUDINARY (WILFRIED) ---
+// ==========================================
+// 1. CONFIGURATION CLOUDINARY
+// ==========================================
 cloudinary.config({
   cloud_name: "wilfriedjunior21",
   api_key: "282333729488766",
@@ -37,16 +39,9 @@ const storage = new CloudinaryStorage({
 });
 const upload = multer({ storage });
 
-// --- 2. CONNEXION MONGODB ---
-mongoose
-  .connect(process.env.MONGO_URI)
-  .then(() => {
-    console.log("✅ MongoDB Connecté");
-    startMarketEngine();
-  })
-  .catch((err) => console.error("❌ Erreur MongoDB:", err));
-
-// --- 3. TOUS LES MODÈLES (PRÉSERVÉS ET ENRICHIS POUR LE PORTFOLIO) ---
+// ==========================================
+// 2. MODÈLES DE DONNÉES (DATABASE)
+// ==========================================
 const User = mongoose.model(
   "User",
   new mongoose.Schema({
@@ -66,7 +61,6 @@ const User = mongoose.model(
       default: "non_verifie",
     },
     kycDocUrl: { type: String, default: "" },
-    // Portfolio requis pour Wallet.jsx
     portfolio: [
       {
         actionId: { type: mongoose.Schema.Types.ObjectId, ref: "Action" },
@@ -141,26 +135,9 @@ const Transaction = mongoose.model(
       enum: ["en_attente", "valide", "rejete"],
       default: "valide",
     },
-    recipientPhone: { type: String, default: "" },
-    paymentNumber: { type: String, default: "" },
+    recipientPhone: String,
     referenceId: String,
-    comment: String, // Utilisé par Wallet.jsx pour afficher la raison du refus
-    date: { type: Date, default: Date.now },
-  })
-);
-
-const Notification = mongoose.model(
-  "Notification",
-  new mongoose.Schema({
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-    title: String,
-    message: String,
-    type: {
-      type: String,
-      enum: ["info", "success", "warning", "retrait"],
-      default: "info",
-    },
-    read: { type: Boolean, default: false },
+    comment: String,
     date: { type: Date, default: Date.now },
   })
 );
@@ -177,7 +154,9 @@ const Message = mongoose.model(
   })
 );
 
-// --- 4. MOTEUR DE MARCHÉ (FONCTION D'ORIGINE) ---
+// ==========================================
+// 3. MOTEUR DE BOURSE (SIMULATION)
+// ==========================================
 const startMarketEngine = () => {
   setInterval(async () => {
     try {
@@ -188,18 +167,20 @@ const startMarketEngine = () => {
         await a.save();
       }
     } catch (e) {
-      console.error("Market Engine Error:", e);
+      console.error("Erreur Moteur Marché:", e);
     }
   }, 30 * 60 * 1000);
 };
 
-// --- 5. ROUTES AUTHENTIFICATION ---
+// ==========================================
+// 4. ROUTES AUTHENTIFICATION
+// ==========================================
 app.post("/api/auth/register", async (req, res) => {
   try {
     const hash = await bcrypt.hash(req.body.password, 10);
     const user = new User({ ...req.body, password: hash });
     await user.save();
-    res.status(201).json({ message: "OK" });
+    res.status(201).json({ message: "Utilisateur créé" });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -220,38 +201,49 @@ app.post("/api/auth/login", async (req, res) => {
         email: user.email,
         profilePic: user.profilePic,
       });
-    } else res.status(400).json({ error: "Identifiants invalides" });
+    } else {
+      res.status(400).json({ error: "Email ou mot de passe incorrect" });
+    }
   } catch (e) {
-    res.status(500).json({ error: "Erreur login" });
+    res.status(500).json({ error: "Erreur lors de la connexion" });
   }
 });
 
-// --- 6. ROUTES UTILISATEUR & PROFIL ---
+// ==========================================
+// 5. ROUTES UTILISATEUR & PROFIL
+// ==========================================
 app.get("/api/user/:id", async (req, res) => {
   try {
-    res.json(
-      await User.findById(req.params.id)
-        .populate("portfolio.actionId")
-        .select("-password")
-    );
+    const user = await User.findById(req.params.id)
+      .populate("portfolio.actionId")
+      .select("-password");
+    res.json(user);
   } catch (e) {
     res.status(404).json({ error: "Utilisateur non trouvé" });
   }
 });
 
-app.get(
-  ["/api/user/:id/balance", "/api/users/:id/balance"],
-  async (req, res) => {
-    const user = await User.findById(req.params.id);
-    res.json({ balance: user ? user.balance : 0 });
+app.put("/api/user/:id", async (req, res) => {
+  try {
+    const { name } = req.body;
+    const user = await User.findByIdAndUpdate(
+      req.params.id,
+      { name },
+      { new: true }
+    );
+    res.json(user);
+  } catch (e) {
+    res.status(500).json({ error: "Erreur mise à jour nom" });
   }
-);
+});
 
 app.post(
   "/api/user/upload-profile-pic/:userId",
   upload.single("image"),
   async (req, res) => {
     try {
+      if (!req.file)
+        return res.status(400).json({ error: "Aucune image reçue" });
       const user = await User.findByIdAndUpdate(
         req.params.userId,
         { profilePic: req.file.path },
@@ -259,31 +251,27 @@ app.post(
       );
       res.json(user);
     } catch (e) {
-      res.status(500).json({ error: "Erreur Upload" });
+      res.status(500).json({ error: "Erreur upload image" });
     }
   }
 );
 
-app.post("/api/user/submit-kyc", async (req, res) => {
-  try {
-    const { userId, documentUrl } = req.body;
-    await User.findByIdAndUpdate(userId, {
-      kycDocUrl: documentUrl,
-      kycStatus: "en_attente",
-    });
-    res.json({ message: "KYC soumis avec succès" });
-  } catch (e) {
-    res.status(500).json({ error: "Erreur KYC" });
-  }
+app.get("/api/user/:id/balance", async (req, res) => {
+  const user = await User.findById(req.params.id);
+  res.json({ balance: user ? user.balance : 0 });
 });
 
-// --- 7. ROUTES ACTIONS & OBLIGATIONS (PRÉSERVÉES + ÉDITION) ---
-app.get("/api/actions", async (req, res) =>
-  res.json(await Action.find().populate("creatorId", "name profilePic"))
-);
+// ==========================================
+// 6. ROUTES ACTIONS & OBLIGATIONS
+// ==========================================
+app.get("/api/actions", async (req, res) => {
+  const actions = await Action.find().populate("creatorId", "name profilePic");
+  res.json(actions);
+});
 
 app.get("/api/actions/owner/:userId", async (req, res) => {
-  res.json(await Action.find({ creatorId: req.params.userId }));
+  const actions = await Action.find({ creatorId: req.params.userId });
+  res.json(actions);
 });
 
 app.post("/api/actions/propose", async (req, res) => {
@@ -294,48 +282,31 @@ app.post("/api/actions/propose", async (req, res) => {
       status: "en_attente",
     });
     await action.save();
-    res.status(201).json({ message: "OK" });
+    res.status(201).json({ message: "Proposition envoyée" });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-app.patch("/api/actions/:id", async (req, res) => {
-  const action = await Action.findByIdAndUpdate(req.params.id, req.body, {
-    new: true,
-  });
-  res.json(action);
+app.get("/api/bonds", async (req, res) => {
+  const bonds = await Bond.find({ status: "valide" });
+  res.json(bonds);
 });
 
-app.get("/api/bonds", async (req, res) =>
-  res.json(await Bond.find({ status: "valide" }))
-);
-
-app.get(
-  ["/api/bonds/owner/:userId", "/api/obligations/owner/:userId"],
-  async (req, res) => {
-    res.json(await Bond.find({ actionnaireId: req.params.userId }));
-  }
-);
-
-app.post("/api/bonds/propose", async (req, res) => {
-  await new Bond({ ...req.body, status: "en_attente" }).save();
-  res.json({ message: "OK" });
+app.get("/api/obligations/owner/:userId", async (req, res) => {
+  const bonds = await Bond.find({ actionnaireId: req.params.userId });
+  res.json(bonds);
 });
 
-app.patch("/api/obligations/:id", async (req, res) => {
-  const bond = await Bond.findByIdAndUpdate(req.params.id, req.body, {
-    new: true,
-  });
-  res.json(bond);
-});
-
-// --- 8. SYSTÈME DE TRANSACTIONS (ACHAT / VENTE / SOUSCRIPTION) ---
+// ==========================================
+// 7. SYSTÈME DE TRANSACTIONS (ACHAT / VENTE)
+// ==========================================
 app.post("/api/transactions/buy", async (req, res) => {
   const { userId, actionId, quantity } = req.body;
   const user = await User.findById(userId);
   const action = await Action.findById(actionId);
   const cost = action.price * quantity;
+
   if (user.balance >= cost && action.availableQuantity >= quantity) {
     user.balance -= cost;
     const portIdx = user.portfolio.findIndex(
@@ -343,9 +314,9 @@ app.post("/api/transactions/buy", async (req, res) => {
     );
     if (portIdx > -1) user.portfolio[portIdx].quantity += Number(quantity);
     else user.portfolio.push({ actionId, quantity });
-    await user.save();
+
     action.availableQuantity -= quantity;
-    action.price = Math.round(action.price + action.price * 0.0005 * quantity);
+    await user.save();
     await action.save();
     await new Transaction({
       userId,
@@ -355,8 +326,10 @@ app.post("/api/transactions/buy", async (req, res) => {
       type: "achat",
       status: "valide",
     }).save();
-    res.json({ message: "Achat réussi" });
-  } else res.status(400).json({ error: "Solde ou stock insuffisant" });
+    res.json({ message: "Achat validé" });
+  } else {
+    res.status(400).json({ error: "Solde ou stock insuffisant" });
+  }
 });
 
 app.post("/api/transactions/sell", async (req, res) => {
@@ -367,15 +340,12 @@ app.post("/api/transactions/sell", async (req, res) => {
   const portIdx = user.portfolio.findIndex(
     (p) => p.actionId.toString() === actionId
   );
+
   if (portIdx > -1 && user.portfolio[portIdx].quantity >= quantity) {
     user.portfolio[portIdx].quantity -= quantity;
     user.balance += gain;
-    await user.save();
     action.availableQuantity += Number(quantity);
-    action.price = Math.max(
-      10,
-      Math.round(action.price - action.price * 0.0003 * quantity)
-    );
+    await user.save();
     await action.save();
     await new Transaction({
       userId,
@@ -385,146 +355,59 @@ app.post("/api/transactions/sell", async (req, res) => {
       type: "vente",
       status: "valide",
     }).save();
-    res.json({ message: "Vente réussie" });
-  } else
-    res
-      .status(400)
-      .json({ error: "Quantité insuffisante dans le portefeuille" });
-});
-
-app.post("/api/transactions/subscribe-bond", async (req, res) => {
-  const { userId, bondId, amount } = req.body;
-  const user = await User.findById(userId);
-  const bond = await Bond.findById(bondId);
-  if (user.balance < amount)
-    return res.status(400).json({ error: "Solde insuffisant" });
-  user.balance -= amount;
-  bond.montantCollecte += Number(amount);
-  await user.save();
-  await bond.save();
-  await new Transaction({
-    userId,
-    bondId,
-    amount,
-    type: "souscription_obligation",
-    status: "valide",
-  }).save();
-  res.json({ message: "Souscription réussie" });
-});
-
-app.post("/api/transactions/withdraw", async (req, res) => {
-  const { userId, amount, recipientPhone } = req.body;
-  const user = await User.findById(userId);
-  if (user.balance >= amount) {
-    user.balance -= amount;
-    await user.save();
-    await new Transaction({
-      userId,
-      amount,
-      recipientPhone,
-      type: "retrait",
-      status: "en_attente",
-    }).save();
-    res.json({ message: "Demande de retrait envoyée" });
-  } else res.status(400).json({ error: "Solde insuffisant" });
+    res.json({ message: "Vente effectuée" });
+  } else {
+    res.status(400).json({ error: "Quantité insuffisante" });
+  }
 });
 
 app.get("/api/transactions/user/:userId", async (req, res) => {
-  res.json(
-    await Transaction.find({ userId: req.params.userId })
-      .populate("actionId bondId")
-      .sort({ date: -1 })
-  );
+  const tx = await Transaction.find({ userId: req.params.userId })
+    .populate("actionId bondId")
+    .sort({ date: -1 });
+  res.json(tx);
 });
 
-// --- 9. MESSAGERIE & CHAT ---
-app.get(
-  ["/api/messages/owner/:userId", "/api/messages/user/:userId"],
-  async (req, res) => {
-    res.json(
-      await Message.find({ receiverId: req.params.userId })
-        .populate("senderId", "name profilePic")
-        .populate("actionId", "name")
-        .sort({ createdAt: -1 })
-    );
-  }
-);
-
-app.get("/api/messages/chat/:contactId/:userId", async (req, res) => {
-  res.json(
-    await Message.find({
-      $or: [
-        { senderId: req.params.userId, receiverId: req.params.contactId },
-        { senderId: req.params.contactId, receiverId: req.params.userId },
-      ],
-    }).sort({ createdAt: 1 })
-  );
+// ==========================================
+// 8. MESSAGERIE
+// ==========================================
+app.get("/api/messages/owner/:userId", async (req, res) => {
+  const msg = await Message.find({ receiverId: req.params.userId })
+    .populate("senderId", "name profilePic")
+    .sort({ createdAt: -1 });
+  res.json(msg);
 });
 
-app.post("/api/messages/send", async (req, res) =>
-  res.json(await new Message(req.body).save())
-);
-
-app.patch("/api/messages/reply/:id", async (req, res) => {
-  res.json(
-    await Message.findByIdAndUpdate(
-      req.params.id,
-      { reply: req.body.reply },
-      { new: true }
-    )
-  );
+app.post("/api/messages/send", async (req, res) => {
+  const msg = new Message(req.body);
+  await msg.save();
+  res.json(msg);
 });
 
-// --- 10. ADMINISTRATION (ADMINPANEL.JSX) ---
-app.get("/api/admin/users", async (req, res) =>
-  res.json(await User.find().select("-password").sort({ name: 1 }))
-);
-app.get("/api/admin/actions", async (req, res) =>
-  res.json(await Action.find().populate("creatorId", "name"))
-);
-app.get("/api/admin/bonds", async (req, res) =>
-  res.json(await Bond.find().populate("actionnaireId", "name"))
-);
-app.get("/api/admin/transactions", async (req, res) =>
-  res.json(
-    await Transaction.find().populate("userId", "name").sort({ date: -1 })
-  )
-);
-
-app.patch("/api/admin/kyc/:id", async (req, res) => {
-  await User.findByIdAndUpdate(req.params.id, { kycStatus: req.body.status });
-  res.json({ message: "Statut KYC mis à jour" });
-});
-
-app.patch("/api/admin/actions/:id/validate", async (req, res) => {
-  await Action.findByIdAndUpdate(req.params.id, { status: "valide" });
-  res.json({ message: "Action validée" });
-});
-
-app.patch("/api/admin/bonds/:id/validate", async (req, res) => {
-  await Bond.findByIdAndUpdate(req.params.id, { status: "valide" });
-  res.json({ message: "Obligation validée" });
+// ==========================================
+// 9. ADMINISTRATION (KYC, VALIDATION, DIVIDENDES)
+// ==========================================
+app.get("/api/admin/users", async (req, res) => {
+  const users = await User.find().select("-password");
+  res.json(users);
 });
 
 app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
   const tx = await Transaction.findById(req.params.id);
-  if (tx.type === "depot" && tx.status === "en_attente") {
+  if (tx.type === "depot") {
     await User.findByIdAndUpdate(tx.userId, { $inc: { balance: tx.amount } });
   }
   tx.status = "valide";
   await tx.save();
-  res.json({ message: "Transaction validée" });
+  res.json({ message: "Validé" });
 });
 
 app.patch("/api/admin/transactions/:id/reject", async (req, res) => {
   const tx = await Transaction.findById(req.params.id);
-  if (tx.status === "en_attente") {
-    await User.findByIdAndUpdate(tx.userId, { $inc: { balance: tx.amount } });
-    tx.status = "rejete";
-    tx.comment = req.body.reason; // Motif stocké dans 'comment' pour Wallet.jsx
-    await tx.save();
-  }
-  res.json({ message: "Transaction rejetée et utilisateur remboursé" });
+  tx.status = "rejete";
+  tx.comment = req.body.reason;
+  await tx.save();
+  res.json({ message: "Rejeté" });
 });
 
 app.post("/api/admin/distribute-dividends", async (req, res) => {
@@ -544,10 +427,12 @@ app.post("/api/admin/distribute-dividends", async (req, res) => {
       status: "valide",
     }).save();
   }
-  res.json({ message: "Dividendes distribués avec succès" });
+  res.json({ message: "Distribution terminée" });
 });
 
-// --- 11. PAIEMENTS PAYMOONEY & NOTIFICATIONS ---
+// ==========================================
+// 10. PAIEMENTS PAYMOONEY
+// ==========================================
 app.post("/api/payments/paymooney/init", async (req, res) => {
   try {
     const { userId, amount, email, name } = req.body;
@@ -578,14 +463,18 @@ app.post("/api/payments/paymooney/init", async (req, res) => {
   }
 });
 
-app.get("/api/notifications/:userId", async (req, res) =>
-  res.json(
-    await Notification.find({ userId: req.params.userId }).sort({ date: -1 })
-  )
-);
+// ==========================================
+// DÉMARRAGE DU SERVEUR
+// ==========================================
+mongoose
+  .connect(process.env.MONGO_URI)
+  .then(() => {
+    console.log("✅ MongoDB Connecté");
+    startMarketEngine();
+  })
+  .catch((err) => console.log(err));
 
-// --- DÉMARRAGE ---
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () =>
-  console.log(`🚀 Serveur Wilfried 100% Opérationnel sur ${PORT}`)
+  console.log(`🚀 Serveur Wilfried lancé sur le port ${PORT}`)
 );
