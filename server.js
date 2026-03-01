@@ -402,9 +402,23 @@ app.get("/api/obligations/owner/:userId", async (req, res) => {
 
 // --- PAYMOONEY & TRANSACTIONS ---
 
+// CORRECTION ICI : Ajout de logs et vérification de sécurité
 app.post("/api/payments/paymooney/init", async (req, res) => {
   try {
     const { userId, amount, email, name } = req.body;
+
+    // Log pour debugger en cas d'erreur 400
+    if (!userId || !amount || !email) {
+      console.log("❌ Erreur 400: Données manquantes", {
+        userId,
+        amount,
+        email,
+      });
+      return res.status(400).json({
+        error: "L'ID utilisateur, le montant et l'email sont obligatoires.",
+      });
+    }
+
     const referenceId = `PM-${uuidv4().substring(0, 8).toUpperCase()}`;
     const newTx = new Transaction({
       userId,
@@ -414,6 +428,7 @@ app.post("/api/payments/paymooney/init", async (req, res) => {
       referenceId,
     });
     await newTx.save();
+
     const params = new URLSearchParams({
       amount: amount.toString(),
       currency_code: "XAF",
@@ -424,17 +439,24 @@ app.post("/api/payments/paymooney/init", async (req, res) => {
       first_name: name || "Client",
       email: email,
     });
+
     const response = await axios.post(
       "https://www.paymooney.com/api/v1.0/payment_url",
       params
     );
+
     if (response.data.response === "success") {
       res.json({ payment_url: response.data.payment_url, referenceId });
     } else {
-      res.status(400).json({ error: response.data.description });
+      res
+        .status(400)
+        .json({ error: response.data.description || "Erreur Paymooney" });
     }
   } catch (error) {
-    res.status(500).json({ error: "Erreur Paymooney Init" });
+    console.error("❌ Erreur Paymooney:", error.message);
+    res
+      .status(500)
+      .json({ error: "Erreur lors de l'initialisation du paiement." });
   }
 });
 
