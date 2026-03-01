@@ -6,6 +6,9 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const { v4: uuidv4 } = require("uuid");
+const multer = require("multer"); // AJOUT : Pour les fichiers
+const path = require("path"); // AJOUT : Pour les chemins
+const fs = require("fs"); // AJOUT : Pour le dossier système
 
 const app = express();
 app.use(express.json());
@@ -18,6 +21,28 @@ app.use(
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
+
+// --- CONFIGURATION STOCKAGE IMAGES (MULTER) ---
+// Crée le dossier 'uploads' s'il n'existe pas
+const uploadDir = path.join(__dirname, "uploads");
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir);
+}
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, "uploads/");
+  },
+  filename: (req, file, cb) => {
+    // Nom unique : timestamp + nom original
+    cb(null, Date.now() + "-" + file.originalname);
+  },
+});
+
+const upload = multer({ storage: storage });
+
+// Rendre le dossier 'uploads' accessible publiquement via URL
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // --- CONFIGURATION PAYMOONEY ---
 const PAYMOONEY_PUBLIC_KEY =
@@ -46,6 +71,7 @@ const userSchema = new mongoose.Schema({
     default: "acheteur",
   },
   balance: { type: Number, default: 0 },
+  profilePic: { type: String, default: "" }, // AJOUT : Photo de profil
   kycStatus: {
     type: String,
     enum: ["non_verifie", "en_attente", "valide"],
@@ -176,6 +202,45 @@ const startMarketEngine = () => {
   }, 30 * 60 * 1000);
 };
 
+// --- ROUTES PROFIL & IMAGES (NOUVEAU) ---
+
+// Route pour uploader la photo de profil (Logo)
+app.post(
+  "/api/user/upload-profile-pic/:userId",
+  upload.single("image"),
+  async (req, res) => {
+    try {
+      if (!req.file)
+        return res.status(400).json({ error: "Aucun fichier envoyé" });
+
+      const imageUrl = `${req.protocol}://${req.get("host")}/uploads/${
+        req.file.filename
+      }`;
+
+      // Mise à jour de l'utilisateur
+      const updatedUser = await User.findByIdAndUpdate(
+        req.params.userId,
+        { profilePic: imageUrl },
+        { new: true }
+      ).select("-password");
+
+      res.json(updatedUser);
+    } catch (err) {
+      res.status(500).json({ error: "Erreur lors de l'upload du profil" });
+    }
+  }
+);
+
+// Route pour récupérer le profil complet
+app.get("/api/user/profile/:id", async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id).select("-password");
+    res.json(user);
+  } catch (err) {
+    res.status(404).json({ error: "Profil non trouvé" });
+  }
+});
+
 // --- ROUTES AUTH ---
 app.post("/api/auth/register", async (req, res) => {
   try {
@@ -207,6 +272,7 @@ app.post("/api/auth/login", async (req, res) => {
       role: user.role,
       name: user.name,
       email: user.email,
+      profilePic: user.profilePic, // Ajouté à la réponse de login
     });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
@@ -337,16 +403,21 @@ app.get("/api/obligations/owner/:userId", async (req, res) => {
   }
 });
 
-// --- ACTIONS ---
+// --- ACTIONS (MODIFIÉ POUR INCLURE LE PROFIL DU CRÉATEUR) ---
 app.get("/api/actions", async (req, res) => {
   try {
-    res.json(await Action.find().populate("creatorId", "name"));
+    // Populate récupère les infos du créateur (Nom et Photo)
+    const actions = await Action.find().populate(
+      "creatorId",
+      "name profilePic"
+    );
+    res.json(actions);
   } catch (err) {
     res.status(500).json({ error: "Erreur" });
   }
 });
 
-// --- MISE À JOUR PAR L'ACTIONNAIRE (FIX ERREUR 404 DASHBOARD) ---
+// --- MISE À JOUR PAR L'ACTIONNAIRE ---
 app.patch("/api/actions/:id", async (req, res) => {
   try {
     const { price, description } = req.body;
