@@ -326,7 +326,7 @@ app.get("/api/bonds", async (req, res) => {
   }
 });
 
-// MODIFICATION ICI : On change l'URL pour éviter le conflit avec les transactions
+// Route par défaut utilisée par certains composants
 app.get("/api/bonds/list/owner/:userId", async (req, res) => {
   try {
     const bonds = await Bond.find({ actionnaireId: req.params.userId }).sort({
@@ -335,6 +335,18 @@ app.get("/api/bonds/list/owner/:userId", async (req, res) => {
     res.json(bonds);
   } catch (err) {
     res.status(500).json({ error: "Erreur récupération de vos obligations" });
+  }
+});
+
+// AJOUT : Route Alias pour corriger l'erreur 404 du Dashboard
+app.get("/api/obligations/owner/:userId", async (req, res) => {
+  try {
+    const bonds = await Bond.find({ actionnaireId: req.params.userId }).sort({
+      createdAt: -1,
+    });
+    res.json(bonds);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur récupération obligations" });
   }
 });
 
