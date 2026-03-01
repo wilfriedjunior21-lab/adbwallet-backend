@@ -556,6 +556,62 @@ app.post("/api/transactions/buy", async (req, res) => {
   }
 });
 
+// --- LOGIQUE DE VENTE D'ACTIONS (Route manquante ajoutée) ---
+app.post("/api/transactions/sell", async (req, res) => {
+  const { userId, actionId, quantity } = req.body;
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const user = await User.findById(userId).session(session);
+    const action = await Action.findById(actionId).session(session);
+
+    // Calculer combien l'utilisateur possède
+    const userTransactions = await Transaction.find({
+      userId,
+      actionId,
+      status: "valide",
+    }).session(session);
+    let ownedQuantity = 0;
+    userTransactions.forEach((t) => {
+      if (t.type === "achat") ownedQuantity += t.quantity;
+      if (t.type === "vente") ownedQuantity -= t.quantity;
+    });
+
+    if (ownedQuantity < quantity)
+      throw new Error("Vous ne possédez pas assez de parts");
+
+    const totalGain = action.price * quantity;
+    user.balance += totalGain;
+    await user.save({ session });
+
+    action.availableQuantity += Number(quantity);
+    // Baisse légère du prix lors d'une vente (loi de l'offre)
+    action.price = Math.round(
+      action.price - action.price * (0.0003 * quantity)
+    );
+    if (action.price < 10) action.price = 10;
+    await action.save({ session });
+
+    await new Transaction({
+      userId,
+      actionId,
+      quantity,
+      amount: totalGain,
+      type: "vente",
+      status: "valide",
+      comment: "Vente d'actions sur le marché",
+    }).save({ session });
+
+    await session.commitTransaction();
+    res.json({ message: "Vente réussie", newBalance: user.balance });
+  } catch (err) {
+    await session.abortTransaction();
+    res.status(500).json({ error: err.message });
+  } finally {
+    session.endSession();
+  }
+});
+
 // --- LOGIQUE DE SOUSCRIPTION AUX OBLIGATIONS ---
 app.post("/api/transactions/subscribe-bond", async (req, res) => {
   const { userId, bondId, amount } = req.body;
@@ -726,18 +782,15 @@ app.get("/api/admin/transactions", async (req, res) =>
 
 app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
   try {
-    // 1. Trouver la transaction d'abord pour vérifier son type
     const tx = await Transaction.findById(req.params.id);
     if (!tx) return res.status(404).json({ error: "Transaction non trouvée" });
 
-    // 2. Si c'est un dépôt, on incrémente le solde de l'utilisateur
     if (tx.type === "depot" && tx.status === "en_attente") {
       await User.findByIdAndUpdate(tx.userId, {
         $inc: { balance: tx.amount },
       });
     }
 
-    // 3. Mettre à jour le statut de la transaction
     tx.status = "valide";
     await tx.save();
 
