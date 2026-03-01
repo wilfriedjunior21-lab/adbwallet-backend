@@ -91,7 +91,7 @@ const actionSchema = new mongoose.Schema({
 const bondSchema = new mongoose.Schema({
   titre: { type: String, required: true },
   montantCible: { type: Number, required: true },
-  montantCollecte: { type: Number, default: 0 }, // Ajouté pour suivre l'évolution
+  montantCollecte: { type: Number, default: 0 },
   tauxInteret: { type: Number, required: true },
   dureeMois: { type: Number, required: true },
   frequence: { type: String, required: true },
@@ -109,7 +109,7 @@ const bondSchema = new mongoose.Schema({
 const transactionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   actionId: { type: mongoose.Schema.Types.ObjectId, ref: "Action" },
-  bondId: { type: mongoose.Schema.Types.ObjectId, ref: "Bond" }, // Ajouté pour les obligations
+  bondId: { type: mongoose.Schema.Types.ObjectId, ref: "Bond" },
   amount: Number,
   quantity: Number,
   type: {
@@ -398,18 +398,11 @@ app.get("/api/obligations/owner/:userId", async (req, res) => {
 
 // --- PAYMOONEY & TRANSACTIONS ---
 
-// CORRECTION ICI : Ajout de logs et vérification de sécurité
 app.post("/api/payments/paymooney/init", async (req, res) => {
   try {
     const { userId, amount, email, name } = req.body;
 
-    // Log pour debugger en cas d'erreur 400
     if (!userId || !amount || !email) {
-      console.log("❌ Erreur 400: Données manquantes", {
-        userId,
-        amount,
-        email,
-      });
       return res.status(400).json({
         error: "L'ID utilisateur, le montant et l'email sont obligatoires.",
       });
@@ -449,7 +442,6 @@ app.post("/api/payments/paymooney/init", async (req, res) => {
         .json({ error: response.data.description || "Erreur Paymooney" });
     }
   } catch (error) {
-    console.error("❌ Erreur Paymooney:", error.message);
     res
       .status(500)
       .json({ error: "Erreur lors de l'initialisation du paiement." });
@@ -564,7 +556,7 @@ app.post("/api/transactions/buy", async (req, res) => {
   }
 });
 
-// --- LOGIQUE DE SOUSCRIPTION AUX OBLIGATIONS (ROUTE MANQUANTE) ---
+// --- LOGIQUE DE SOUSCRIPTION AUX OBLIGATIONS ---
 app.post("/api/transactions/subscribe-bond", async (req, res) => {
   const { userId, bondId, amount } = req.body;
   const session = await mongoose.startSession();
@@ -579,25 +571,21 @@ app.post("/api/transactions/subscribe-bond", async (req, res) => {
     if (user.balance < amount)
       throw new Error("Solde insuffisant pour cette souscription");
 
-    // Débiter l'acheteur
     user.balance -= Number(amount);
     await user.save({ session });
 
-    // Créditer l'actionnaire (le porteur du projet)
     await User.findByIdAndUpdate(
       bond.actionnaireId,
       { $inc: { balance: Number(amount) } },
       { session }
     );
 
-    // Mettre à jour le montant collecté de l'obligation
     bond.montantCollecte += Number(amount);
     if (bond.montantCollecte >= bond.montantCible) {
-      bond.status = "cloture"; // Fermer si cible atteinte
+      bond.status = "cloture";
     }
     await bond.save({ session });
 
-    // Enregistrer la transaction
     const newTx = new Transaction({
       userId,
       bondId,
@@ -656,7 +644,7 @@ app.post("/api/transactions/withdraw", async (req, res) => {
   }
 });
 
-// --- MESSAGERIE & ADMIN & NOTIFS ---
+// --- MESSAGERIE & CHAT ---
 
 app.get("/api/messages/owner/:userId", async (req, res) => {
   try {
@@ -667,6 +655,24 @@ app.get("/api/messages/owner/:userId", async (req, res) => {
     res.json(msgs);
   } catch (err) {
     res.status(500).json({ error: "Erreur" });
+  }
+});
+
+// NOUVELLE ROUTE : Pour récupérer la conversation entre deux utilisateurs
+app.get("/api/messages/chat/:userId/:contactId", async (req, res) => {
+  try {
+    const { userId, contactId } = req.params;
+    const chat = await Message.find({
+      $or: [
+        { senderId: userId, receiverId: contactId },
+        { senderId: contactId, receiverId: userId },
+      ],
+    })
+      .populate("senderId", "name profilePic")
+      .sort({ createdAt: 1 });
+    res.json(chat);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur récupération chat" });
   }
 });
 
@@ -699,6 +705,8 @@ app.post("/api/messages/send", async (req, res) => {
   }
 });
 
+// --- ADMIN ---
+
 app.get("/api/admin/users", async (req, res) =>
   res.json(await User.find().select("-password"))
 );
@@ -716,6 +724,51 @@ app.get("/api/admin/transactions", async (req, res) =>
   res.json(await Transaction.find().populate("userId").sort({ date: -1 }))
 );
 
+app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
+  try {
+    const tx = await Transaction.findByIdAndUpdate(
+      req.params.id,
+      { status: "valide" },
+      { new: true }
+    );
+    if (!tx) return res.status(404).json({ error: "Transaction non trouvée" });
+
+    await createNotify(
+      tx.userId,
+      "Transaction Validée",
+      `Votre ${tx.type} de ${tx.amount} F a été approuvé.`,
+      "success"
+    );
+    res.json({ message: "Transaction validée" });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur lors de la validation" });
+  }
+});
+
+app.patch("/api/admin/transactions/:id/reject", async (req, res) => {
+  try {
+    const tx = await Transaction.findById(req.params.id);
+    if (!tx) return res.status(404).json({ error: "Transaction non trouvée" });
+
+    tx.status = "rejete";
+    await tx.save();
+
+    if (tx.type === "retrait") {
+      await User.findByIdAndUpdate(tx.userId, { $inc: { balance: tx.amount } });
+    }
+
+    await createNotify(
+      tx.userId,
+      "Transaction Rejetée",
+      `Votre ${tx.type} de ${tx.amount} F a été refusé.`,
+      "warning"
+    );
+    res.json({ message: "Transaction rejetée" });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur lors du rejet" });
+  }
+});
+
 app.patch("/api/admin/actions/:id/validate", async (req, res) => {
   const action = await Action.findByIdAndUpdate(
     req.params.id,
@@ -730,6 +783,8 @@ app.patch("/api/admin/actions/:id/validate", async (req, res) => {
   );
   res.json({ message: "Validée" });
 });
+
+// --- NOTIFICATIONS ---
 
 app.get("/api/notifications/:userId", async (req, res) => {
   res.json(
