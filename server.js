@@ -95,6 +95,7 @@ const actionSchema = new mongoose.Schema({
 const bondSchema = new mongoose.Schema({
   titre: { type: String, required: true },
   montantCible: { type: Number, required: true },
+  montantCollecte: { type: Number, default: 0 }, // Ajouté pour suivre l'évolution
   tauxInteret: { type: Number, required: true },
   dureeMois: { type: Number, required: true },
   frequence: { type: String, required: true },
@@ -112,11 +113,20 @@ const bondSchema = new mongoose.Schema({
 const transactionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   actionId: { type: mongoose.Schema.Types.ObjectId, ref: "Action" },
+  bondId: { type: mongoose.Schema.Types.ObjectId, ref: "Bond" }, // Ajouté pour les obligations
   amount: Number,
   quantity: Number,
   type: {
     type: String,
-    enum: ["achat", "vente", "depot", "retrait", "dividende", "coupon"],
+    enum: [
+      "achat",
+      "vente",
+      "depot",
+      "retrait",
+      "dividende",
+      "coupon",
+      "souscription_obligation",
+    ],
   },
   status: {
     type: String,
@@ -240,9 +250,10 @@ app.put("/api/user/update/:id", async (req, res) => {
 app.get("/api/user/:id", async (req, res) => {
   try {
     const user = await User.findById(req.params.id).select("-password");
+    if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
     res.json(user);
   } catch (err) {
-    res.status(404).json({ error: "Non trouvé" });
+    res.status(500).json({ error: "Erreur serveur" });
   }
 });
 
@@ -355,7 +366,6 @@ app.post("/api/bonds/propose", async (req, res) => {
   }
 });
 
-// NOUVELLE ROUTE : Patch pour mettre à jour une obligation (demandé par le Dashboard)
 app.patch("/api/obligations/:id", async (req, res) => {
   try {
     const { tauxInteret, description } = req.body;
@@ -457,12 +467,12 @@ app.post("/api/payments/paymooney-notify", async (req, res) => {
   }
 });
 
-// NOUVELLE ROUTE : Historique des transactions pour un utilisateur spécifique (Dashboard)
 app.get("/api/transactions/user/:userId", async (req, res) => {
   try {
-    const txs = await Transaction.find({ userId: req.params.userId }).sort({
-      date: -1,
-    });
+    const txs = await Transaction.find({ userId: req.params.userId })
+      .populate("actionId", "name")
+      .populate("bondId", "titre")
+      .sort({ date: -1 });
     res.json(txs);
   } catch (err) {
     res.status(500).json({ error: "Erreur historique" });
@@ -478,6 +488,7 @@ app.get("/api/users/:id/balance", async (req, res) => {
   }
 });
 
+// --- LOGIQUE D'ACHAT D'ACTIONS ---
 app.post("/api/transactions/buy", async (req, res) => {
   const { userId, actionId, quantity } = req.body;
   const session = await mongoose.startSession();
@@ -535,6 +546,76 @@ app.post("/api/transactions/buy", async (req, res) => {
   }
 });
 
+// --- LOGIQUE DE SOUSCRIPTION AUX OBLIGATIONS (ROUTE MANQUANTE) ---
+app.post("/api/transactions/subscribe-bond", async (req, res) => {
+  const { userId, bondId, amount } = req.body;
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const user = await User.findById(userId).session(session);
+    const bond = await Bond.findById(bondId).session(session);
+
+    if (!user) throw new Error("Utilisateur non trouvé");
+    if (!bond || bond.status !== "valide")
+      throw new Error("Obligation non disponible");
+    if (user.balance < amount)
+      throw new Error("Solde insuffisant pour cette souscription");
+
+    // Débiter l'acheteur
+    user.balance -= Number(amount);
+    await user.save({ session });
+
+    // Créditer l'actionnaire (le porteur du projet)
+    await User.findByIdAndUpdate(
+      bond.actionnaireId,
+      { $inc: { balance: Number(amount) } },
+      { session }
+    );
+
+    // Mettre à jour le montant collecté de l'obligation
+    bond.montantCollecte += Number(amount);
+    if (bond.montantCollecte >= bond.montantCible) {
+      bond.status = "cloture"; // Fermer si cible atteinte
+    }
+    await bond.save({ session });
+
+    // Enregistrer la transaction
+    const newTx = new Transaction({
+      userId,
+      bondId,
+      amount: Number(amount),
+      type: "souscription_obligation",
+      status: "valide",
+      comment: `Souscription au projet ${bond.titre}`,
+    });
+    await newTx.save({ session });
+
+    await createNotify(
+      userId,
+      "Souscription réussie",
+      `Vous avez investi ${amount} F dans ${bond.titre}`,
+      "success"
+    );
+    await createNotify(
+      bond.actionnaireId,
+      "Nouvel Investissement",
+      `Un utilisateur a investi ${amount} F dans votre projet ${bond.titre}`,
+      "info"
+    );
+
+    await session.commitTransaction();
+    res.json({
+      message: "Souscription effectuée avec succès",
+      newBalance: user.balance,
+    });
+  } catch (err) {
+    await session.abortTransaction();
+    res.status(500).json({ error: err.message });
+  } finally {
+    session.endSession();
+  }
+});
+
 app.post("/api/transactions/withdraw", async (req, res) => {
   const { userId, amount, recipientPhone } = req.body;
   try {
@@ -571,7 +652,6 @@ app.get("/api/messages/owner/:userId", async (req, res) => {
   }
 });
 
-// NOUVELLE ROUTE : Répondre à un message (demandé par le Dashboard)
 app.patch("/api/messages/reply/:messageId", async (req, res) => {
   try {
     const { reply } = req.body;
