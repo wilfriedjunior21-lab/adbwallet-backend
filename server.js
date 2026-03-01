@@ -214,9 +214,10 @@ app.post(
     try {
       if (!req.file)
         return res.status(400).json({ error: "Aucun fichier envoyé" });
-      const imageUrl = `${req.protocol}://${req.get("host")}/uploads/${
-        req.file.filename
-      }`;
+
+      // Utilisation d'un chemin relatif plus robuste
+      const imageUrl = `/uploads/${req.file.filename}`;
+
       const updatedUser = await User.findByIdAndUpdate(
         req.params.userId,
         { profilePic: imageUrl },
@@ -556,7 +557,7 @@ app.post("/api/transactions/buy", async (req, res) => {
   }
 });
 
-// --- LOGIQUE DE VENTE D'ACTIONS (Route manquante ajoutée) ---
+// --- LOGIQUE DE VENTE D'ACTIONS ---
 app.post("/api/transactions/sell", async (req, res) => {
   const { userId, actionId, quantity } = req.body;
   const session = await mongoose.startSession();
@@ -565,7 +566,6 @@ app.post("/api/transactions/sell", async (req, res) => {
     const user = await User.findById(userId).session(session);
     const action = await Action.findById(actionId).session(session);
 
-    // Calculer combien l'utilisateur possède
     const userTransactions = await Transaction.find({
       userId,
       actionId,
@@ -585,7 +585,6 @@ app.post("/api/transactions/sell", async (req, res) => {
     await user.save({ session });
 
     action.availableQuantity += Number(quantity);
-    // Baisse légère du prix lors d'une vente (loi de l'offre)
     action.price = Math.round(
       action.price - action.price * (0.0003 * quantity)
     );
@@ -599,7 +598,6 @@ app.post("/api/transactions/sell", async (req, res) => {
       amount: totalGain,
       type: "vente",
       status: "valide",
-      comment: "Vente d'actions sur le marché",
     }).save({ session });
 
     await session.commitTransaction();
@@ -624,8 +622,7 @@ app.post("/api/transactions/subscribe-bond", async (req, res) => {
     if (!user) throw new Error("Utilisateur non trouvé");
     if (!bond || bond.status !== "valide")
       throw new Error("Obligation non disponible");
-    if (user.balance < amount)
-      throw new Error("Solde insuffisant pour cette souscription");
+    if (user.balance < amount) throw new Error("Solde insuffisant");
 
     user.balance -= Number(amount);
     await user.save({ session });
@@ -648,28 +645,11 @@ app.post("/api/transactions/subscribe-bond", async (req, res) => {
       amount: Number(amount),
       type: "souscription_obligation",
       status: "valide",
-      comment: `Souscription au projet ${bond.titre}`,
     });
     await newTx.save({ session });
 
-    await createNotify(
-      userId,
-      "Souscription réussie",
-      `Vous avez investi ${amount} F dans ${bond.titre}`,
-      "success"
-    );
-    await createNotify(
-      bond.actionnaireId,
-      "Nouvel Investissement",
-      `Un utilisateur a investi ${amount} F dans votre projet ${bond.titre}`,
-      "info"
-    );
-
     await session.commitTransaction();
-    res.json({
-      message: "Souscription effectuée avec succès",
-      newBalance: user.balance,
-    });
+    res.json({ message: "Succès", newBalance: user.balance });
   } catch (err) {
     await session.abortTransaction();
     res.status(500).json({ error: err.message });
@@ -714,7 +694,6 @@ app.get("/api/messages/owner/:userId", async (req, res) => {
   }
 });
 
-// NOUVELLE ROUTE : Pour récupérer la conversation entre deux utilisateurs
 app.get("/api/messages/chat/:userId/:contactId", async (req, res) => {
   try {
     const { userId, contactId } = req.params;
@@ -728,7 +707,7 @@ app.get("/api/messages/chat/:userId/:contactId", async (req, res) => {
       .sort({ createdAt: 1 });
     res.json(chat);
   } catch (err) {
-    res.status(500).json({ error: "Erreur récupération chat" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
@@ -742,7 +721,7 @@ app.patch("/api/messages/reply/:messageId", async (req, res) => {
     );
     res.json(msg);
   } catch (err) {
-    res.status(500).json({ error: "Erreur réponse message" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
@@ -750,18 +729,71 @@ app.post("/api/messages/send", async (req, res) => {
   try {
     const msg = new Message(req.body);
     await msg.save();
-    await createNotify(
-      req.body.receiverId,
-      "Nouveau message",
-      "Vous avez une question sur un actif."
-    );
     res.status(201).json(msg);
   } catch (err) {
     res.status(500).json({ error: "Erreur" });
   }
 });
 
-// --- ADMIN ---
+// --- ADMIN & DIVIDENDES ---
+
+// NOUVELLE ROUTE : Distribution des dividendes
+app.post("/api/admin/distribute-dividends", async (req, res) => {
+  const { actionId, totalAmount } = req.body;
+  try {
+    const action = await Action.findById(actionId);
+    if (!action) return res.status(404).json({ error: "Action non trouvée" });
+
+    // Trouver tous les acheteurs de cette action
+    const transactions = await Transaction.find({ actionId, status: "valide" });
+    const ownership = {};
+    let totalOwned = 0;
+
+    transactions.forEach((t) => {
+      if (!ownership[t.userId]) ownership[t.userId] = 0;
+      if (t.type === "achat") ownership[t.userId] += t.quantity;
+      if (t.type === "vente") ownership[t.userId] -= t.quantity;
+    });
+
+    Object.values(ownership).forEach((q) => (totalOwned += q));
+
+    if (totalOwned <= 0)
+      return res.status(400).json({ error: "Aucun actionnaire trouvé" });
+
+    // Distribuer au prorata
+    for (const userId in ownership) {
+      const share = ownership[userId];
+      if (share > 0) {
+        const dividend = (share / totalOwned) * totalAmount;
+        await User.findByIdAndUpdate(userId, {
+          $inc: { balance: Math.round(dividend) },
+        });
+
+        await new Transaction({
+          userId,
+          actionId,
+          amount: Math.round(dividend),
+          type: "dividende",
+          status: "valide",
+          comment: `Dividende pour ${action.name}`,
+        }).save();
+
+        await createNotify(
+          userId,
+          "Dividende Reçu",
+          `Vous avez reçu ${Math.round(dividend)} F pour vos parts dans ${
+            action.name
+          }`,
+          "success"
+        );
+      }
+    }
+
+    res.json({ message: "Dividendes distribués avec succès" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 app.get("/api/admin/users", async (req, res) =>
   res.json(await User.find().select("-password"))
@@ -786,47 +818,28 @@ app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
     if (!tx) return res.status(404).json({ error: "Transaction non trouvée" });
 
     if (tx.type === "depot" && tx.status === "en_attente") {
-      await User.findByIdAndUpdate(tx.userId, {
-        $inc: { balance: tx.amount },
-      });
+      await User.findByIdAndUpdate(tx.userId, { $inc: { balance: tx.amount } });
     }
 
     tx.status = "valide";
     await tx.save();
-
-    await createNotify(
-      tx.userId,
-      "Transaction Validée",
-      `Votre ${tx.type} de ${tx.amount} F a été approuvé.`,
-      "success"
-    );
-    res.json({ message: "Transaction validée et solde mis à jour" });
+    res.json({ message: "Transaction validée" });
   } catch (err) {
-    res.status(500).json({ error: "Erreur lors de la validation" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
 app.patch("/api/admin/transactions/:id/reject", async (req, res) => {
   try {
     const tx = await Transaction.findById(req.params.id);
-    if (!tx) return res.status(404).json({ error: "Transaction non trouvée" });
-
     tx.status = "rejete";
     await tx.save();
-
     if (tx.type === "retrait") {
       await User.findByIdAndUpdate(tx.userId, { $inc: { balance: tx.amount } });
     }
-
-    await createNotify(
-      tx.userId,
-      "Transaction Rejetée",
-      `Votre ${tx.type} de ${tx.amount} F a été refusé.`,
-      "warning"
-    );
     res.json({ message: "Transaction rejetée" });
   } catch (err) {
-    res.status(500).json({ error: "Erreur lors du rejet" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
@@ -835,12 +848,6 @@ app.patch("/api/admin/actions/:id/validate", async (req, res) => {
     req.params.id,
     { status: "valide" },
     { new: true }
-  );
-  await createNotify(
-    action.creatorId,
-    "Action Validée",
-    `${action.name} est en vente !`,
-    "success"
   );
   res.json({ message: "Validée" });
 });
