@@ -326,8 +326,8 @@ app.get("/api/bonds", async (req, res) => {
   }
 });
 
-// NOUVELLE ROUTE : Obligations spécifiques d'un actionnaire (Pour le dashboard)
-app.get("/api/obligations/owner/:userId", async (req, res) => {
+// MODIFICATION ICI : On change l'URL pour éviter le conflit avec les transactions
+app.get("/api/bonds/list/owner/:userId", async (req, res) => {
   try {
     const bonds = await Bond.find({ actionnaireId: req.params.userId }).sort({
       createdAt: -1,
