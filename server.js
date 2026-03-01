@@ -6,9 +6,9 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const { v4: uuidv4 } = require("uuid");
-const multer = require("multer"); // AJOUT : Pour les fichiers
-const path = require("path"); // AJOUT : Pour les chemins
-const fs = require("fs"); // AJOUT : Pour le dossier système
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
 
 const app = express();
 app.use(express.json());
@@ -23,7 +23,6 @@ app.use(
 );
 
 // --- CONFIGURATION STOCKAGE IMAGES (MULTER) ---
-// Crée le dossier 'uploads' s'il n'existe pas
 const uploadDir = path.join(__dirname, "uploads");
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir);
@@ -34,14 +33,12 @@ const storage = multer.diskStorage({
     cb(null, "uploads/");
   },
   filename: (req, file, cb) => {
-    // Nom unique : timestamp + nom original
     cb(null, Date.now() + "-" + file.originalname);
   },
 });
 
 const upload = multer({ storage: storage });
 
-// Rendre le dossier 'uploads' accessible publiquement via URL
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // --- CONFIGURATION PAYMOONEY ---
@@ -71,7 +68,7 @@ const userSchema = new mongoose.Schema({
     default: "acheteur",
   },
   balance: { type: Number, default: 0 },
-  profilePic: { type: String, default: "" }, // AJOUT : Photo de profil
+  profilePic: { type: String, default: "" },
   kycStatus: {
     type: String,
     enum: ["non_verifie", "en_attente", "valide"],
@@ -202,9 +199,8 @@ const startMarketEngine = () => {
   }, 30 * 60 * 1000);
 };
 
-// --- ROUTES PROFIL & IMAGES (NOUVEAU) ---
+// --- ROUTES PROFIL & IMAGES ---
 
-// Route pour uploader la photo de profil (Logo)
 app.post(
   "/api/user/upload-profile-pic/:userId",
   upload.single("image"),
@@ -212,18 +208,14 @@ app.post(
     try {
       if (!req.file)
         return res.status(400).json({ error: "Aucun fichier envoyé" });
-
       const imageUrl = `${req.protocol}://${req.get("host")}/uploads/${
         req.file.filename
       }`;
-
-      // Mise à jour de l'utilisateur
       const updatedUser = await User.findByIdAndUpdate(
         req.params.userId,
         { profilePic: imageUrl },
         { new: true }
       ).select("-password");
-
       res.json(updatedUser);
     } catch (err) {
       res.status(500).json({ error: "Erreur lors de l'upload du profil" });
@@ -231,13 +223,27 @@ app.post(
   }
 );
 
-// Route pour récupérer le profil complet
-app.get("/api/user/profile/:id", async (req, res) => {
+// Route pour mettre à jour le nom/infos du profil
+app.put("/api/user/update/:id", async (req, res) => {
+  try {
+    const { name } = req.body;
+    const user = await User.findByIdAndUpdate(
+      req.params.id,
+      { name },
+      { new: true }
+    ).select("-password");
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur lors de la mise à jour" });
+  }
+});
+
+app.get("/api/user/:id", async (req, res) => {
   try {
     const user = await User.findById(req.params.id).select("-password");
     res.json(user);
   } catch (err) {
-    res.status(404).json({ error: "Profil non trouvé" });
+    res.status(404).json({ error: "Non trouvé" });
   }
 });
 
@@ -272,14 +278,105 @@ app.post("/api/auth/login", async (req, res) => {
       role: user.role,
       name: user.name,
       email: user.email,
-      profilePic: user.profilePic, // Ajouté à la réponse de login
+      profilePic: user.profilePic,
     });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
 
-// --- PAYMOONEY ---
+// --- ACTIONS (PROPOSITION & RÉCUPÉRATION) ---
+
+// LA ROUTE QUI MANQUAIT :
+app.post("/api/actions/propose", async (req, res) => {
+  try {
+    const { name, price, totalQuantity, description, creatorId } = req.body;
+    const newAction = new Action({
+      name,
+      price: Number(price),
+      totalQuantity: Number(totalQuantity),
+      availableQuantity: Number(totalQuantity),
+      description,
+      creatorId,
+      status: "en_attente",
+    });
+    await newAction.save();
+    await createNotify(
+      creatorId,
+      "Actif soumis",
+      `Votre actif "${name}" est en cours d'examen.`,
+      "info"
+    );
+    res.status(201).json({ message: "Succès" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/actions", async (req, res) => {
+  try {
+    const actions = await Action.find().populate(
+      "creatorId",
+      "name profilePic"
+    );
+    res.json(actions);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur" });
+  }
+});
+
+app.patch("/api/actions/:id", async (req, res) => {
+  try {
+    const { price, description } = req.body;
+    const action = await Action.findByIdAndUpdate(
+      req.params.id,
+      { price, description },
+      { new: true }
+    );
+    res.json(action);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur MAJ Action" });
+  }
+});
+
+// --- OBLIGATIONS (BONDS) ---
+app.post("/api/bonds/propose", async (req, res) => {
+  try {
+    const newBond = new Bond(req.body);
+    await newBond.save();
+    await createNotify(
+      req.body.actionnaireId,
+      "Obligation soumise",
+      `Projet "${req.body.titre}" en examen.`,
+      "info"
+    );
+    res.status(201).json({ message: "Envoyé" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/bonds", async (req, res) => {
+  try {
+    const bonds = await Bond.find({ status: "valide" }).sort({ createdAt: -1 });
+    res.json(bonds);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur récupération obligations" });
+  }
+});
+
+app.get("/api/obligations/owner/:userId", async (req, res) => {
+  try {
+    const bonds = await Bond.find({ actionnaireId: req.params.userId }).sort({
+      createdAt: -1,
+    });
+    res.json(bonds);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur récupération obligations" });
+  }
+});
+
+// --- PAYMOONEY & TRANSACTIONS ---
 app.post("/api/payments/paymooney/init", async (req, res) => {
   try {
     const { userId, amount, email, name } = req.body;
@@ -292,7 +389,6 @@ app.post("/api/payments/paymooney/init", async (req, res) => {
       referenceId,
     });
     await newTx.save();
-
     const params = new URLSearchParams({
       amount: amount.toString(),
       currency_code: "XAF",
@@ -303,7 +399,6 @@ app.post("/api/payments/paymooney/init", async (req, res) => {
       first_name: name || "Client",
       email: email,
     });
-
     const response = await axios.post(
       "https://www.paymooney.com/api/v1.0/payment_url",
       params
@@ -347,114 +442,12 @@ app.post("/api/payments/paymooney-notify", async (req, res) => {
   }
 });
 
-// --- ROUTES CORE (UTILISATEURS) ---
-app.get("/api/user/:id", async (req, res) => {
-  try {
-    const user = await User.findById(req.params.id).select("-password");
-    res.json(user);
-  } catch (err) {
-    res.status(404).json({ error: "Non trouvé" });
-  }
-});
-
 app.get("/api/users/:id/balance", async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
     res.json({ balance: user.balance || 0 });
   } catch (err) {
     res.status(500).json({ error: "Erreur solde" });
-  }
-});
-
-// --- OBLIGATIONS (BONDS) ---
-app.post("/api/bonds/propose", async (req, res) => {
-  try {
-    const newBond = new Bond(req.body);
-    await newBond.save();
-    await createNotify(
-      req.body.actionnaireId,
-      "Obligation soumise",
-      `Projet "${req.body.titre}" en examen.`,
-      "info"
-    );
-    res.status(201).json({ message: "Envoyé" });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get("/api/bonds", async (req, res) => {
-  try {
-    const bonds = await Bond.find({ status: "valide" }).sort({ createdAt: -1 });
-    res.json(bonds);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur récupération obligations" });
-  }
-});
-
-app.get("/api/obligations/owner/:userId", async (req, res) => {
-  try {
-    const bonds = await Bond.find({ actionnaireId: req.params.userId }).sort({
-      createdAt: -1,
-    });
-    res.json(bonds);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur récupération obligations" });
-  }
-});
-
-// --- ACTIONS (MODIFIÉ POUR INCLURE LE PROFIL DU CRÉATEUR) ---
-app.get("/api/actions", async (req, res) => {
-  try {
-    // Populate récupère les infos du créateur (Nom et Photo)
-    const actions = await Action.find().populate(
-      "creatorId",
-      "name profilePic"
-    );
-    res.json(actions);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
-// --- MISE À JOUR PAR L'ACTIONNAIRE ---
-app.patch("/api/actions/:id", async (req, res) => {
-  try {
-    const { price, description } = req.body;
-    const action = await Action.findByIdAndUpdate(
-      req.params.id,
-      { price, description },
-      { new: true }
-    );
-    res.json(action);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur MAJ Action" });
-  }
-});
-
-app.patch("/api/obligations/:id", async (req, res) => {
-  try {
-    const { tauxInteret, description } = req.body;
-    const bond = await Bond.findByIdAndUpdate(
-      req.params.id,
-      { tauxInteret, description },
-      { new: true }
-    );
-    res.json(bond);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur MAJ Obligation" });
-  }
-});
-
-// --- TRANSACTIONS ---
-app.get("/api/transactions/user/:userId", async (req, res) => {
-  try {
-    const txs = await Transaction.find({ userId: req.params.userId })
-      .populate("actionId")
-      .sort({ date: -1 });
-    res.json(txs);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
   }
 });
 
@@ -496,15 +489,14 @@ app.post("/api/transactions/buy", async (req, res) => {
     action.availableQuantity -= quantity;
     await action.save({ session });
 
-    const buyerTx = new Transaction({
+    await new Transaction({
       userId,
       actionId,
       quantity,
       amount: totalCost,
       type: "achat",
       status: "valide",
-    });
-    await buyerTx.save({ session });
+    }).save({ session });
 
     await session.commitTransaction();
     res.json({ message: "Succès", newBalance: user.balance });
@@ -538,7 +530,7 @@ app.post("/api/transactions/withdraw", async (req, res) => {
   }
 });
 
-// --- MESSAGERIE ---
+// --- MESSAGERIE & ADMIN & NOTIFS ---
 app.get("/api/messages/owner/:userId", async (req, res) => {
   try {
     const msgs = await Message.find({ receiverId: req.params.userId })
@@ -546,20 +538,6 @@ app.get("/api/messages/owner/:userId", async (req, res) => {
       .populate("actionId", "name")
       .sort({ createdAt: -1 });
     res.json(msgs);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
-app.patch("/api/messages/reply/:id", async (req, res) => {
-  try {
-    const { reply } = req.body;
-    const msg = await Message.findByIdAndUpdate(
-      req.params.id,
-      { reply },
-      { new: true }
-    );
-    res.json(msg);
   } catch (err) {
     res.status(500).json({ error: "Erreur" });
   }
@@ -580,7 +558,6 @@ app.post("/api/messages/send", async (req, res) => {
   }
 });
 
-// --- ADMIN ROUTES ---
 app.get("/api/admin/users", async (req, res) =>
   res.json(await User.find().select("-password"))
 );
@@ -598,11 +575,6 @@ app.get("/api/admin/transactions", async (req, res) =>
   res.json(await Transaction.find().populate("userId").sort({ date: -1 }))
 );
 
-app.patch("/api/admin/kyc/:id", async (req, res) => {
-  await User.findByIdAndUpdate(req.params.id, { kycStatus: req.body.status });
-  res.json({ message: "Statut mis à jour" });
-});
-
 app.patch("/api/admin/actions/:id/validate", async (req, res) => {
   const action = await Action.findByIdAndUpdate(
     req.params.id,
@@ -616,45 +588,6 @@ app.patch("/api/admin/actions/:id/validate", async (req, res) => {
     "success"
   );
   res.json({ message: "Validée" });
-});
-
-app.patch("/api/admin/bonds/:id/validate", async (req, res) => {
-  const bond = await Bond.findByIdAndUpdate(
-    req.params.id,
-    { status: "valide" },
-    { new: true }
-  );
-  await createNotify(
-    bond.actionnaireId,
-    "Obligation Validée",
-    "Votre projet est actif.",
-    "success"
-  );
-  res.json({ message: "Validée" });
-});
-
-app.delete("/api/admin/bonds/:id", async (req, res) => {
-  await Bond.findByIdAndDelete(req.params.id);
-  res.json({ message: "Supprimée" });
-});
-
-app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
-  const tx = await Transaction.findById(req.params.id);
-  tx.status = "valide";
-  await tx.save();
-  if (tx.type === "depot")
-    await User.findByIdAndUpdate(tx.userId, { $inc: { balance: tx.amount } });
-  res.json({ message: "Validée" });
-});
-
-app.patch("/api/admin/transactions/:id/reject", async (req, res) => {
-  const tx = await Transaction.findById(req.params.id);
-  if (tx.type === "retrait")
-    await User.findByIdAndUpdate(tx.userId, { $inc: { balance: tx.amount } });
-  tx.status = "rejete";
-  tx.comment = req.body.reason;
-  await tx.save();
-  res.json({ message: "Rejeté" });
 });
 
 app.get("/api/notifications/:userId", async (req, res) => {
