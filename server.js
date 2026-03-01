@@ -726,12 +726,20 @@ app.get("/api/admin/transactions", async (req, res) =>
 
 app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
   try {
-    const tx = await Transaction.findByIdAndUpdate(
-      req.params.id,
-      { status: "valide" },
-      { new: true }
-    );
+    // 1. Trouver la transaction d'abord pour vérifier son type
+    const tx = await Transaction.findById(req.params.id);
     if (!tx) return res.status(404).json({ error: "Transaction non trouvée" });
+
+    // 2. Si c'est un dépôt, on incrémente le solde de l'utilisateur
+    if (tx.type === "depot" && tx.status === "en_attente") {
+      await User.findByIdAndUpdate(tx.userId, {
+        $inc: { balance: tx.amount },
+      });
+    }
+
+    // 3. Mettre à jour le statut de la transaction
+    tx.status = "valide";
+    await tx.save();
 
     await createNotify(
       tx.userId,
@@ -739,7 +747,7 @@ app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
       `Votre ${tx.type} de ${tx.amount} F a été approuvé.`,
       "success"
     );
-    res.json({ message: "Transaction validée" });
+    res.json({ message: "Transaction validée et solde mis à jour" });
   } catch (err) {
     res.status(500).json({ error: "Erreur lors de la validation" });
   }
