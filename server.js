@@ -46,7 +46,7 @@ mongoose
   })
   .catch((err) => console.error("❌ Erreur MongoDB:", err));
 
-// --- TOUS LES MODÈLES RÉTABLIS ---
+// --- TOUS LES MODÈLES (REPRIS À L'IDENTIQUE) ---
 const User = mongoose.model(
   "User",
   new mongoose.Schema({
@@ -276,6 +276,18 @@ app.get("/api/actions", async (req, res) =>
   res.json(await Action.find().populate("creatorId", "name profilePic"))
 );
 
+// Route spécifique pour les actions possédées par un utilisateur (Dashboard)
+app.get("/api/actions/owner/:userId", async (req, res) => {
+  try {
+    const actions = await Action.find({ creatorId: req.params.userId });
+    res.json(actions);
+  } catch (e) {
+    res
+      .status(500)
+      .json({ error: "Erreur lors de la récupération de vos actions" });
+  }
+});
+
 app.post("/api/actions/propose", async (req, res) => {
   try {
     const action = new Action({
@@ -341,15 +353,42 @@ app.post("/api/transactions/sell", async (req, res) => {
 app.get("/api/bonds", async (req, res) =>
   res.json(await Bond.find({ status: "valide" }))
 );
-app.get("/api/obligations/owner/:userId", async (req, res) =>
-  res.json(await Bond.find({ actionnaireId: req.params.userId }))
+
+// Alias de route pour assurer la compatibilité Dashboard (404 fix)
+app.get(
+  ["/api/bonds/owner/:userId", "/api/obligations/owner/:userId"],
+  async (req, res) => {
+    try {
+      const bonds = await Bond.find({ actionnaireId: req.params.userId });
+      res.json(bonds);
+    } catch (e) {
+      res.status(500).json({ error: "Erreur obligations" });
+    }
+  }
 );
+
 app.post("/api/bonds/propose", async (req, res) => {
   await new Bond(req.body).save();
   res.json({ message: "OK" });
 });
 
 // --- MESSAGERIE & CHAT ---
+// Alias pour les messages reçus (pour le Dashboard Actionnaire)
+app.get(
+  ["/api/messages/owner/:userId", "/api/messages/user/:userId"],
+  async (req, res) => {
+    try {
+      const msgs = await Message.find({ receiverId: req.params.userId })
+        .populate("senderId", "name profilePic")
+        .populate("actionId", "name")
+        .sort({ createdAt: -1 });
+      res.json(msgs);
+    } catch (e) {
+      res.status(500).json({ error: "Erreur messages" });
+    }
+  }
+);
+
 app.get("/api/messages/chat/:userId/:contactId", async (req, res) => {
   try {
     const msgs = await Message.find({
