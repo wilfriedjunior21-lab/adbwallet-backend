@@ -4,3 +4,6 @@ https://adbwallet-backend.onrender.com/dashboard-acheteur
 
 
 voici mon server.js ajoute juste ce qu'il faut sans toucher a mes fonctionnaliter
+wilfriedjunior21
+secret :kGzwKVICcHtqaWH5z-s8ST1lL5M
+apikey: 282333729488766

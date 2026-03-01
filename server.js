@@ -7,8 +7,9 @@ const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const { v4: uuidv4 } = require("uuid");
 const multer = require("multer");
+const cloudinary = require("cloudinary").v2;
+const { CloudinaryStorage } = require("multer-storage-cloudinary");
 const path = require("path");
-const fs = require("fs");
 
 const app = express();
 app.use(express.json());
@@ -22,24 +23,22 @@ app.use(
   })
 );
 
-// --- CONFIGURATION STOCKAGE IMAGES (MULTER) ---
-const uploadDir = path.join(__dirname, "uploads");
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir);
-}
+// --- CONFIGURATION CLOUDINARY (WILFRIED) ---
+cloudinary.config({
+  cloud_name: "wilfriedjunior21",
+  api_key: "282333729488766",
+  api_secret: "kGzwKVICcHtqaWH5z-s8ST1lL5M",
+});
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, "uploads/");
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + "-" + file.originalname);
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: "adb_wallet_profiles",
+    allowed_formats: ["jpg", "png", "jpeg"],
   },
 });
 
 const upload = multer({ storage: storage });
-
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // --- CONFIGURATION PAYMOONEY ---
 const PAYMOONEY_PUBLIC_KEY = "PK_d5M4k6BYZ1qaHegEJ8x7";
@@ -205,8 +204,7 @@ const startMarketEngine = () => {
   }, 30 * 60 * 1000);
 };
 
-// --- ROUTES PROFIL & IMAGES ---
-
+// --- ROUTES PROFIL (MAINTENANT AVEC CLOUDINARY) ---
 app.post(
   "/api/user/upload-profile-pic/:userId",
   upload.single("image"),
@@ -214,10 +212,7 @@ app.post(
     try {
       if (!req.file)
         return res.status(400).json({ error: "Aucun fichier envoyé" });
-
-      // Utilisation d'un chemin relatif plus robuste
-      const imageUrl = `/uploads/${req.file.filename}`;
-
+      const imageUrl = req.file.path; // URL Cloudinary sécurisée
       const updatedUser = await User.findByIdAndUpdate(
         req.params.userId,
         { profilePic: imageUrl },
@@ -225,7 +220,7 @@ app.post(
       ).select("-password");
       res.json(updatedUser);
     } catch (err) {
-      res.status(500).json({ error: "Erreur lors de l'upload du profil" });
+      res.status(500).json({ error: "Erreur Cloudinary" });
     }
   }
 );
@@ -240,7 +235,7 @@ app.put("/api/user/update/:id", async (req, res) => {
     ).select("-password");
     res.json(user);
   } catch (err) {
-    res.status(500).json({ error: "Erreur lors de la mise à jour" });
+    res.status(500).json({ error: "Erreur MAJ" });
   }
 });
 
@@ -293,7 +288,6 @@ app.post("/api/auth/login", async (req, res) => {
 });
 
 // --- ACTIONS ---
-
 app.post("/api/actions/propose", async (req, res) => {
   try {
     const { name, price, totalQuantity, description, creatorId } = req.body;
@@ -346,7 +340,6 @@ app.patch("/api/actions/:id", async (req, res) => {
 });
 
 // --- OBLIGATIONS (BONDS) ---
-
 app.post("/api/bonds/propose", async (req, res) => {
   try {
     const newBond = new Bond(req.body);
@@ -363,52 +356,19 @@ app.post("/api/bonds/propose", async (req, res) => {
   }
 });
 
-app.patch("/api/obligations/:id", async (req, res) => {
-  try {
-    const { tauxInteret, description } = req.body;
-    const bond = await Bond.findByIdAndUpdate(
-      req.params.id,
-      { tauxInteret, description },
-      { new: true }
-    );
-    res.json(bond);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur MAJ Obligation" });
-  }
-});
-
 app.get("/api/bonds", async (req, res) => {
   try {
     const bonds = await Bond.find({ status: "valide" }).sort({ createdAt: -1 });
     res.json(bonds);
   } catch (err) {
-    res.status(500).json({ error: "Erreur récupération obligations" });
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
-app.get("/api/obligations/owner/:userId", async (req, res) => {
-  try {
-    const bonds = await Bond.find({ actionnaireId: req.params.userId }).sort({
-      createdAt: -1,
-    });
-    res.json(bonds);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur récupération obligations" });
-  }
-});
-
-// --- PAYMOONEY & TRANSACTIONS ---
-
+// --- PAYMOONEY & SOLDE ---
 app.post("/api/payments/paymooney/init", async (req, res) => {
   try {
     const { userId, amount, email, name } = req.body;
-
-    if (!userId || !amount || !email) {
-      return res.status(400).json({
-        error: "L'ID utilisateur, le montant et l'email sont obligatoires.",
-      });
-    }
-
     const referenceId = `PM-${uuidv4().substring(0, 8).toUpperCase()}`;
     const newTx = new Transaction({
       userId,
@@ -434,18 +394,11 @@ app.post("/api/payments/paymooney/init", async (req, res) => {
       "https://www.paymooney.com/api/v1.0/payment_url",
       params
     );
-
-    if (response.data.response === "success") {
+    if (response.data.response === "success")
       res.json({ payment_url: response.data.payment_url, referenceId });
-    } else {
-      res
-        .status(400)
-        .json({ error: response.data.description || "Erreur Paymooney" });
-    }
+    else res.status(400).json({ error: "Erreur Paymooney" });
   } catch (error) {
-    res
-      .status(500)
-      .json({ error: "Erreur lors de l'initialisation du paiement." });
+    res.status(500).json({ error: "Erreur initialisation" });
   }
 });
 
@@ -478,18 +431,6 @@ app.post("/api/payments/paymooney-notify", async (req, res) => {
   }
 });
 
-app.get("/api/transactions/user/:userId", async (req, res) => {
-  try {
-    const txs = await Transaction.find({ userId: req.params.userId })
-      .populate("actionId", "name")
-      .populate("bondId", "titre")
-      .sort({ date: -1 });
-    res.json(txs);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur historique" });
-  }
-});
-
 app.get("/api/users/:id/balance", async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
@@ -499,7 +440,7 @@ app.get("/api/users/:id/balance", async (req, res) => {
   }
 });
 
-// --- LOGIQUE D'ACHAT D'ACTIONS ---
+// --- MARCHÉ : ACHAT & VENTE ---
 app.post("/api/transactions/buy", async (req, res) => {
   const { userId, actionId, quantity } = req.body;
   const session = await mongoose.startSession();
@@ -507,7 +448,6 @@ app.post("/api/transactions/buy", async (req, res) => {
   try {
     const user = await User.findById(userId).session(session);
     const action = await Action.findById(actionId).session(session);
-    if (!action || action.status !== "valide") throw new Error("Invalide");
     const totalCost = action.price * quantity;
     if (user.balance < totalCost) throw new Error("Solde insuffisant");
     if (action.availableQuantity < quantity)
@@ -532,9 +472,7 @@ app.post("/api/transactions/buy", async (req, res) => {
       }).save({ session });
     }
 
-    action.price = Math.round(
-      action.price + action.price * (0.0005 * quantity)
-    );
+    action.price = Math.round(action.price + action.price * 0.0005 * quantity);
     action.availableQuantity -= quantity;
     await action.save({ session });
 
@@ -546,7 +484,6 @@ app.post("/api/transactions/buy", async (req, res) => {
       type: "achat",
       status: "valide",
     }).save({ session });
-
     await session.commitTransaction();
     res.json({ message: "Succès", newBalance: user.balance });
   } catch (err) {
@@ -557,7 +494,6 @@ app.post("/api/transactions/buy", async (req, res) => {
   }
 });
 
-// --- LOGIQUE DE VENTE D'ACTIONS ---
 app.post("/api/transactions/sell", async (req, res) => {
   const { userId, actionId, quantity } = req.body;
   const session = await mongoose.startSession();
@@ -565,29 +501,25 @@ app.post("/api/transactions/sell", async (req, res) => {
   try {
     const user = await User.findById(userId).session(session);
     const action = await Action.findById(actionId).session(session);
-
-    const userTransactions = await Transaction.find({
+    const txs = await Transaction.find({
       userId,
       actionId,
       status: "valide",
     }).session(session);
-    let ownedQuantity = 0;
-    userTransactions.forEach((t) => {
-      if (t.type === "achat") ownedQuantity += t.quantity;
-      if (t.type === "vente") ownedQuantity -= t.quantity;
+    let owned = 0;
+    txs.forEach((t) => {
+      if (t.type === "achat") owned += t.quantity;
+      if (t.type === "vente") owned -= t.quantity;
     });
 
-    if (ownedQuantity < quantity)
-      throw new Error("Vous ne possédez pas assez de parts");
+    if (owned < quantity) throw new Error("Parts insuffisantes");
 
-    const totalGain = action.price * quantity;
-    user.balance += totalGain;
+    const gain = action.price * quantity;
+    user.balance += gain;
     await user.save({ session });
 
     action.availableQuantity += Number(quantity);
-    action.price = Math.round(
-      action.price - action.price * (0.0003 * quantity)
-    );
+    action.price = Math.round(action.price - action.price * 0.0003 * quantity);
     if (action.price < 10) action.price = 10;
     await action.save({ session });
 
@@ -595,11 +527,10 @@ app.post("/api/transactions/sell", async (req, res) => {
       userId,
       actionId,
       quantity,
-      amount: totalGain,
+      amount: gain,
       type: "vente",
       status: "valide",
     }).save({ session });
-
     await session.commitTransaction();
     res.json({ message: "Vente réussie", newBalance: user.balance });
   } catch (err) {
@@ -610,51 +541,82 @@ app.post("/api/transactions/sell", async (req, res) => {
   }
 });
 
-// --- LOGIQUE DE SOUSCRIPTION AUX OBLIGATIONS ---
-app.post("/api/transactions/subscribe-bond", async (req, res) => {
-  const { userId, bondId, amount } = req.body;
-  const session = await mongoose.startSession();
-  session.startTransaction();
+// --- ADMIN : DIVIDENDES ---
+app.post("/api/admin/distribute-dividends", async (req, res) => {
+  const { actionId, totalAmount } = req.body;
   try {
-    const user = await User.findById(userId).session(session);
-    const bond = await Bond.findById(bondId).session(session);
+    const action = await Action.findById(actionId);
+    const txs = await Transaction.find({ actionId, status: "valide" });
+    const ownership = {};
+    let totalOwned = 0;
 
-    if (!user) throw new Error("Utilisateur non trouvé");
-    if (!bond || bond.status !== "valide")
-      throw new Error("Obligation non disponible");
-    if (user.balance < amount) throw new Error("Solde insuffisant");
-
-    user.balance -= Number(amount);
-    await user.save({ session });
-
-    await User.findByIdAndUpdate(
-      bond.actionnaireId,
-      { $inc: { balance: Number(amount) } },
-      { session }
-    );
-
-    bond.montantCollecte += Number(amount);
-    if (bond.montantCollecte >= bond.montantCible) {
-      bond.status = "cloture";
-    }
-    await bond.save({ session });
-
-    const newTx = new Transaction({
-      userId,
-      bondId,
-      amount: Number(amount),
-      type: "souscription_obligation",
-      status: "valide",
+    txs.forEach((t) => {
+      if (!ownership[t.userId]) ownership[t.userId] = 0;
+      if (t.type === "achat") ownership[t.userId] += t.quantity;
+      if (t.type === "vente") ownership[t.userId] -= t.quantity;
     });
-    await newTx.save({ session });
 
-    await session.commitTransaction();
-    res.json({ message: "Succès", newBalance: user.balance });
+    Object.values(ownership).forEach((q) => (totalOwned += q));
+    if (totalOwned <= 0)
+      return res.status(400).json({ error: "Aucun actionnaire trouvé" });
+
+    for (const userId in ownership) {
+      if (ownership[userId] > 0) {
+        const dividend = Math.round(
+          (ownership[userId] / totalOwned) * Number(totalAmount)
+        );
+        await User.findByIdAndUpdate(userId, { $inc: { balance: dividend } });
+        await new Transaction({
+          userId,
+          actionId,
+          amount: dividend,
+          type: "dividende",
+          status: "valide",
+          comment: `Dividende ${action.name}`,
+        }).save();
+        await createNotify(
+          userId,
+          "Dividende Reçu",
+          `+${dividend} F pour ${action.name}`,
+          "success"
+        );
+      }
+    }
+    res.json({ message: "Distribué avec succès" });
   } catch (err) {
-    await session.abortTransaction();
     res.status(500).json({ error: err.message });
-  } finally {
-    session.endSession();
+  }
+});
+
+// --- ADMIN : VALIDATION ---
+app.get("/api/admin/transactions", async (req, res) =>
+  res.json(await Transaction.find().populate("userId").sort({ date: -1 }))
+);
+
+app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
+  try {
+    const tx = await Transaction.findById(req.params.id);
+    if (tx.type === "depot" && tx.status === "en_attente") {
+      await User.findByIdAndUpdate(tx.userId, { $inc: { balance: tx.amount } });
+    }
+    tx.status = "valide";
+    await tx.save();
+    res.json({ message: "Validé" });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur" });
+  }
+});
+
+app.patch("/api/admin/transactions/:id/reject", async (req, res) => {
+  try {
+    const tx = await Transaction.findById(req.params.id);
+    tx.status = "rejete";
+    await tx.save();
+    if (tx.type === "retrait")
+      await User.findByIdAndUpdate(tx.userId, { $inc: { balance: tx.amount } });
+    res.json({ message: "Rejeté" });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur" });
   }
 });
 
@@ -666,194 +628,20 @@ app.post("/api/transactions/withdraw", async (req, res) => {
       return res.status(400).json({ error: "Insuffisant" });
     user.balance -= Number(amount);
     await user.save();
-    const tx = new Transaction({
+    await new Transaction({
       userId,
       amount: Number(amount),
       recipientPhone,
       type: "retrait",
       status: "en_attente",
-    });
-    await tx.save();
+    }).save();
     res.json({ message: "Demande reçue", newBalance: user.balance });
   } catch (err) {
     res.status(500).json({ error: "Erreur" });
   }
 });
 
-// --- MESSAGERIE & CHAT ---
-
-app.get("/api/messages/owner/:userId", async (req, res) => {
-  try {
-    const msgs = await Message.find({ receiverId: req.params.userId })
-      .populate("senderId", "name")
-      .populate("actionId", "name")
-      .sort({ createdAt: -1 });
-    res.json(msgs);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
-app.get("/api/messages/chat/:userId/:contactId", async (req, res) => {
-  try {
-    const { userId, contactId } = req.params;
-    const chat = await Message.find({
-      $or: [
-        { senderId: userId, receiverId: contactId },
-        { senderId: contactId, receiverId: userId },
-      ],
-    })
-      .populate("senderId", "name profilePic")
-      .sort({ createdAt: 1 });
-    res.json(chat);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
-app.patch("/api/messages/reply/:messageId", async (req, res) => {
-  try {
-    const { reply } = req.body;
-    const msg = await Message.findByIdAndUpdate(
-      req.params.messageId,
-      { reply },
-      { new: true }
-    );
-    res.json(msg);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
-app.post("/api/messages/send", async (req, res) => {
-  try {
-    const msg = new Message(req.body);
-    await msg.save();
-    res.status(201).json(msg);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
-// --- ADMIN & DIVIDENDES ---
-
-// NOUVELLE ROUTE : Distribution des dividendes
-app.post("/api/admin/distribute-dividends", async (req, res) => {
-  const { actionId, totalAmount } = req.body;
-  try {
-    const action = await Action.findById(actionId);
-    if (!action) return res.status(404).json({ error: "Action non trouvée" });
-
-    // Trouver tous les acheteurs de cette action
-    const transactions = await Transaction.find({ actionId, status: "valide" });
-    const ownership = {};
-    let totalOwned = 0;
-
-    transactions.forEach((t) => {
-      if (!ownership[t.userId]) ownership[t.userId] = 0;
-      if (t.type === "achat") ownership[t.userId] += t.quantity;
-      if (t.type === "vente") ownership[t.userId] -= t.quantity;
-    });
-
-    Object.values(ownership).forEach((q) => (totalOwned += q));
-
-    if (totalOwned <= 0)
-      return res.status(400).json({ error: "Aucun actionnaire trouvé" });
-
-    // Distribuer au prorata
-    for (const userId in ownership) {
-      const share = ownership[userId];
-      if (share > 0) {
-        const dividend = (share / totalOwned) * totalAmount;
-        await User.findByIdAndUpdate(userId, {
-          $inc: { balance: Math.round(dividend) },
-        });
-
-        await new Transaction({
-          userId,
-          actionId,
-          amount: Math.round(dividend),
-          type: "dividende",
-          status: "valide",
-          comment: `Dividende pour ${action.name}`,
-        }).save();
-
-        await createNotify(
-          userId,
-          "Dividende Reçu",
-          `Vous avez reçu ${Math.round(dividend)} F pour vos parts dans ${
-            action.name
-          }`,
-          "success"
-        );
-      }
-    }
-
-    res.json({ message: "Dividendes distribués avec succès" });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get("/api/admin/users", async (req, res) =>
-  res.json(await User.find().select("-password"))
-);
-app.get("/api/admin/actions", async (req, res) =>
-  res.json(await Action.find().sort({ createdAt: -1 }))
-);
-app.get("/api/admin/bonds", async (req, res) =>
-  res.json(
-    await Bond.find()
-      .populate("actionnaireId", "name email")
-      .sort({ createdAt: -1 })
-  )
-);
-app.get("/api/admin/transactions", async (req, res) =>
-  res.json(await Transaction.find().populate("userId").sort({ date: -1 }))
-);
-
-app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
-  try {
-    const tx = await Transaction.findById(req.params.id);
-    if (!tx) return res.status(404).json({ error: "Transaction non trouvée" });
-
-    if (tx.type === "depot" && tx.status === "en_attente") {
-      await User.findByIdAndUpdate(tx.userId, { $inc: { balance: tx.amount } });
-    }
-
-    tx.status = "valide";
-    await tx.save();
-    res.json({ message: "Transaction validée" });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
-app.patch("/api/admin/transactions/:id/reject", async (req, res) => {
-  try {
-    const tx = await Transaction.findById(req.params.id);
-    tx.status = "rejete";
-    await tx.save();
-    if (tx.type === "retrait") {
-      await User.findByIdAndUpdate(tx.userId, { $inc: { balance: tx.amount } });
-    }
-    res.json({ message: "Transaction rejetée" });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
-app.patch("/api/admin/actions/:id/validate", async (req, res) => {
-  const action = await Action.findByIdAndUpdate(
-    req.params.id,
-    { status: "valide" },
-    { new: true }
-  );
-  res.json({ message: "Validée" });
-});
-
 // --- NOTIFICATIONS ---
-
 app.get("/api/notifications/:userId", async (req, res) => {
   res.json(
     await Notification.find({ userId: req.params.userId })
@@ -862,5 +650,6 @@ app.get("/api/notifications/:userId", async (req, res) => {
   );
 });
 
+// --- DÉMARRAGE ---
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🚀 Serveur sur le port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Serveur actif sur le port ${PORT}`));
