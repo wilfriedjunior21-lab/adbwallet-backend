@@ -20,12 +20,11 @@ app.use(
   })
 );
 
-// --- CONFIGURATION CLOUDINARY ---
+// --- 1. CONFIGURATION CLOUDINARY (WILFRIED) ---
 cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || "wilfriedjunior21",
-  api_key: process.env.CLOUDINARY_API_KEY || "282333729488766",
-  api_secret:
-    process.env.CLOUDINARY_API_SECRET || "kGzwKVICcHtqaWH5z-s8ST1lL5M",
+  cloud_name: "wilfriedjunior21",
+  api_key: "282333729488766",
+  api_secret: "kGzwKVICcHtqaWH5z-s8ST1lL5M",
 });
 
 const storage = new CloudinaryStorage({
@@ -38,7 +37,7 @@ const storage = new CloudinaryStorage({
 });
 const upload = multer({ storage });
 
-// --- CONNEXION MONGODB ---
+// --- 2. CONNEXION MONGODB ---
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
@@ -47,7 +46,7 @@ mongoose
   })
   .catch((err) => console.error("❌ Erreur MongoDB:", err));
 
-// --- MODÈLES ---
+// --- 3. TOUS LES MODÈLES (PRÉSERVÉS ET ENRICHIS POUR LE PORTFOLIO) ---
 const User = mongoose.model(
   "User",
   new mongoose.Schema({
@@ -67,10 +66,11 @@ const User = mongoose.model(
       default: "non_verifie",
     },
     kycDocUrl: { type: String, default: "" },
+    // Portfolio requis pour Wallet.jsx
     portfolio: [
       {
         actionId: { type: mongoose.Schema.Types.ObjectId, ref: "Action" },
-        quantity: Number,
+        quantity: { type: Number, default: 0 },
       },
     ],
     totalProfitGained: { type: Number, default: 0 },
@@ -141,9 +141,26 @@ const Transaction = mongoose.model(
       enum: ["en_attente", "valide", "rejete"],
       default: "valide",
     },
-    recipientPhone: String,
+    recipientPhone: { type: String, default: "" },
+    paymentNumber: { type: String, default: "" },
     referenceId: String,
-    reason: String, // Pour les rejets
+    comment: String, // Utilisé par Wallet.jsx pour afficher la raison du refus
+    date: { type: Date, default: Date.now },
+  })
+);
+
+const Notification = mongoose.model(
+  "Notification",
+  new mongoose.Schema({
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    title: String,
+    message: String,
+    type: {
+      type: String,
+      enum: ["info", "success", "warning", "retrait"],
+      default: "info",
+    },
+    read: { type: Boolean, default: false },
     date: { type: Date, default: Date.now },
   })
 );
@@ -151,28 +168,16 @@ const Transaction = mongoose.model(
 const Message = mongoose.model(
   "Message",
   new mongoose.Schema({
-    actionId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Action",
-      required: true,
-    },
-    senderId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
-      required: true,
-    },
-    receiverId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
-      required: true,
-    },
+    actionId: { type: mongoose.Schema.Types.ObjectId, ref: "Action" },
+    senderId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    receiverId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     content: { type: String, required: true },
     reply: { type: String, default: "" },
     createdAt: { type: Date, default: Date.now },
   })
 );
 
-// --- MOTEUR DE MARCHÉ ---
+// --- 4. MOTEUR DE MARCHÉ (FONCTION D'ORIGINE) ---
 const startMarketEngine = () => {
   setInterval(async () => {
     try {
@@ -188,7 +193,7 @@ const startMarketEngine = () => {
   }, 30 * 60 * 1000);
 };
 
-// --- ROUTES AUTH & USER ---
+// --- 5. ROUTES AUTHENTIFICATION ---
 app.post("/api/auth/register", async (req, res) => {
   try {
     const hash = await bcrypt.hash(req.body.password, 10);
@@ -221,6 +226,7 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
+// --- 6. ROUTES UTILISATEUR & PROFIL ---
 app.get("/api/user/:id", async (req, res) => {
   try {
     res.json(
@@ -233,7 +239,31 @@ app.get("/api/user/:id", async (req, res) => {
   }
 });
 
-// NOUVEAU: Route soumission KYC (DashboardAcheteur)
+app.get(
+  ["/api/user/:id/balance", "/api/users/:id/balance"],
+  async (req, res) => {
+    const user = await User.findById(req.params.id);
+    res.json({ balance: user ? user.balance : 0 });
+  }
+);
+
+app.post(
+  "/api/user/upload-profile-pic/:userId",
+  upload.single("image"),
+  async (req, res) => {
+    try {
+      const user = await User.findByIdAndUpdate(
+        req.params.userId,
+        { profilePic: req.file.path },
+        { new: true }
+      );
+      res.json(user);
+    } catch (e) {
+      res.status(500).json({ error: "Erreur Upload" });
+    }
+  }
+);
+
 app.post("/api/user/submit-kyc", async (req, res) => {
   try {
     const { userId, documentUrl } = req.body;
@@ -241,54 +271,66 @@ app.post("/api/user/submit-kyc", async (req, res) => {
       kycDocUrl: documentUrl,
       kycStatus: "en_attente",
     });
-    res.json({ message: "KYC soumis" });
+    res.json({ message: "KYC soumis avec succès" });
   } catch (e) {
     res.status(500).json({ error: "Erreur KYC" });
   }
 });
 
-// --- ROUTES ACTIONS & OBLIGATIONS ---
+// --- 7. ROUTES ACTIONS & OBLIGATIONS (PRÉSERVÉES + ÉDITION) ---
 app.get("/api/actions", async (req, res) =>
   res.json(await Action.find().populate("creatorId", "name profilePic"))
 );
 
-// NOUVEAU: Patch Action (DashboardActionnaire)
-app.patch("/api/actions/:id", async (req, res) => {
+app.get("/api/actions/owner/:userId", async (req, res) => {
+  res.json(await Action.find({ creatorId: req.params.userId }));
+});
+
+app.post("/api/actions/propose", async (req, res) => {
   try {
-    const action = await Action.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
+    const action = new Action({
+      ...req.body,
+      availableQuantity: req.body.totalQuantity,
+      status: "en_attente",
     });
-    res.json(action);
+    await action.save();
+    res.status(201).json({ message: "OK" });
   } catch (e) {
-    res.status(500).json({ error: "Erreur MAJ" });
+    res.status(500).json({ error: e.message });
   }
+});
+
+app.patch("/api/actions/:id", async (req, res) => {
+  const action = await Action.findByIdAndUpdate(req.params.id, req.body, {
+    new: true,
+  });
+  res.json(action);
 });
 
 app.get("/api/bonds", async (req, res) =>
   res.json(await Bond.find({ status: "valide" }))
 );
 
-app.get("/api/obligations/owner/:userId", async (req, res) => {
-  try {
+app.get(
+  ["/api/bonds/owner/:userId", "/api/obligations/owner/:userId"],
+  async (req, res) => {
     res.json(await Bond.find({ actionnaireId: req.params.userId }));
-  } catch (e) {
-    res.status(500).json({ error: "Erreur obligations" });
   }
+);
+
+app.post("/api/bonds/propose", async (req, res) => {
+  await new Bond({ ...req.body, status: "en_attente" }).save();
+  res.json({ message: "OK" });
 });
 
-// NOUVEAU: Patch Obligation (DashboardActionnaire)
 app.patch("/api/obligations/:id", async (req, res) => {
-  try {
-    const bond = await Bond.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-    });
-    res.json(bond);
-  } catch (e) {
-    res.status(500).json({ error: "Erreur MAJ" });
-  }
+  const bond = await Bond.findByIdAndUpdate(req.params.id, req.body, {
+    new: true,
+  });
+  res.json(bond);
 });
 
-// --- TRANSACTIONS ---
+// --- 8. SYSTÈME DE TRANSACTIONS (ACHAT / VENTE / SOUSCRIPTION) ---
 app.post("/api/transactions/buy", async (req, res) => {
   const { userId, actionId, quantity } = req.body;
   const user = await User.findById(userId);
@@ -296,14 +338,14 @@ app.post("/api/transactions/buy", async (req, res) => {
   const cost = action.price * quantity;
   if (user.balance >= cost && action.availableQuantity >= quantity) {
     user.balance -= cost;
-    // Mise à jour portfolio
-    const existing = user.portfolio.find(
+    const portIdx = user.portfolio.findIndex(
       (p) => p.actionId.toString() === actionId
     );
-    if (existing) existing.quantity += Number(quantity);
+    if (portIdx > -1) user.portfolio[portIdx].quantity += Number(quantity);
     else user.portfolio.push({ actionId, quantity });
     await user.save();
     action.availableQuantity -= quantity;
+    action.price = Math.round(action.price + action.price * 0.0005 * quantity);
     await action.save();
     await new Transaction({
       userId,
@@ -317,29 +359,57 @@ app.post("/api/transactions/buy", async (req, res) => {
   } else res.status(400).json({ error: "Solde ou stock insuffisant" });
 });
 
-// NOUVEAU: Route Souscription Obligation (DashboardAcheteur)
-app.post("/api/transactions/subscribe-bond", async (req, res) => {
-  try {
-    const { userId, bondId, amount } = req.body;
-    const user = await User.findById(userId);
-    const bond = await Bond.findById(bondId);
-    if (user.balance < amount)
-      return res.status(400).json({ error: "Solde insuffisant" });
-    user.balance -= amount;
-    bond.montantCollecte += Number(amount);
+app.post("/api/transactions/sell", async (req, res) => {
+  const { userId, actionId, quantity } = req.body;
+  const user = await User.findById(userId);
+  const action = await Action.findById(actionId);
+  const gain = action.price * quantity;
+  const portIdx = user.portfolio.findIndex(
+    (p) => p.actionId.toString() === actionId
+  );
+  if (portIdx > -1 && user.portfolio[portIdx].quantity >= quantity) {
+    user.portfolio[portIdx].quantity -= quantity;
+    user.balance += gain;
     await user.save();
-    await bond.save();
+    action.availableQuantity += Number(quantity);
+    action.price = Math.max(
+      10,
+      Math.round(action.price - action.price * 0.0003 * quantity)
+    );
+    await action.save();
     await new Transaction({
       userId,
-      bondId,
-      amount,
-      type: "souscription_obligation",
+      actionId,
+      quantity,
+      amount: gain,
+      type: "vente",
       status: "valide",
     }).save();
-    res.json({ message: "Souscription réussie" });
-  } catch (e) {
-    res.status(500).json({ error: "Erreur" });
-  }
+    res.json({ message: "Vente réussie" });
+  } else
+    res
+      .status(400)
+      .json({ error: "Quantité insuffisante dans le portefeuille" });
+});
+
+app.post("/api/transactions/subscribe-bond", async (req, res) => {
+  const { userId, bondId, amount } = req.body;
+  const user = await User.findById(userId);
+  const bond = await Bond.findById(bondId);
+  if (user.balance < amount)
+    return res.status(400).json({ error: "Solde insuffisant" });
+  user.balance -= amount;
+  bond.montantCollecte += Number(amount);
+  await user.save();
+  await bond.save();
+  await new Transaction({
+    userId,
+    bondId,
+    amount,
+    type: "souscription_obligation",
+    status: "valide",
+  }).save();
+  res.json({ message: "Souscription réussie" });
 });
 
 app.post("/api/transactions/withdraw", async (req, res) => {
@@ -355,7 +425,7 @@ app.post("/api/transactions/withdraw", async (req, res) => {
       type: "retrait",
       status: "en_attente",
     }).save();
-    res.json({ message: "Demande envoyée" });
+    res.json({ message: "Demande de retrait envoyée" });
   } else res.status(400).json({ error: "Solde insuffisant" });
 });
 
@@ -367,15 +437,18 @@ app.get("/api/transactions/user/:userId", async (req, res) => {
   );
 });
 
-// --- MESSAGERIE ---
-app.get("/api/messages/owner/:userId", async (req, res) => {
-  res.json(
-    await Message.find({ receiverId: req.params.userId })
-      .populate("senderId", "name profilePic")
-      .populate("actionId", "name")
-      .sort({ createdAt: -1 })
-  );
-});
+// --- 9. MESSAGERIE & CHAT ---
+app.get(
+  ["/api/messages/owner/:userId", "/api/messages/user/:userId"],
+  async (req, res) => {
+    res.json(
+      await Message.find({ receiverId: req.params.userId })
+        .populate("senderId", "name profilePic")
+        .populate("actionId", "name")
+        .sort({ createdAt: -1 })
+    );
+  }
+);
 
 app.get("/api/messages/chat/:contactId/:userId", async (req, res) => {
   res.json(
@@ -392,7 +465,6 @@ app.post("/api/messages/send", async (req, res) =>
   res.json(await new Message(req.body).save())
 );
 
-// NOUVEAU: Répondre à un message (DashboardActionnaire)
 app.patch("/api/messages/reply/:id", async (req, res) => {
   res.json(
     await Message.findByIdAndUpdate(
@@ -403,9 +475,9 @@ app.patch("/api/messages/reply/:id", async (req, res) => {
   );
 });
 
-// --- ADMIN ---
+// --- 10. ADMINISTRATION (ADMINPANEL.JSX) ---
 app.get("/api/admin/users", async (req, res) =>
-  res.json(await User.find().select("-password"))
+  res.json(await User.find().select("-password").sort({ name: 1 }))
 );
 app.get("/api/admin/actions", async (req, res) =>
   res.json(await Action.find().populate("creatorId", "name"))
@@ -419,37 +491,21 @@ app.get("/api/admin/transactions", async (req, res) =>
   )
 );
 
-// NOUVEAU: Validation KYC (AdminPanel)
 app.patch("/api/admin/kyc/:id", async (req, res) => {
   await User.findByIdAndUpdate(req.params.id, { kycStatus: req.body.status });
-  res.json({ message: "KYC mis à jour" });
+  res.json({ message: "Statut KYC mis à jour" });
 });
 
-// NOUVEAU: Validation Action (AdminPanel)
 app.patch("/api/admin/actions/:id/validate", async (req, res) => {
   await Action.findByIdAndUpdate(req.params.id, { status: "valide" });
   res.json({ message: "Action validée" });
 });
 
-// NOUVEAU: Validation Obligation (AdminPanel)
 app.patch("/api/admin/bonds/:id/validate", async (req, res) => {
   await Bond.findByIdAndUpdate(req.params.id, { status: "valide" });
   res.json({ message: "Obligation validée" });
 });
 
-// NOUVEAU: Rejet Retrait avec recrédit (AdminPanel)
-app.patch("/api/admin/transactions/:id/reject", async (req, res) => {
-  const tx = await Transaction.findById(req.params.id);
-  if (tx.status === "en_attente") {
-    await User.findByIdAndUpdate(tx.userId, { $inc: { balance: tx.amount } });
-    tx.status = "rejete";
-    tx.reason = req.body.reason;
-    await tx.save();
-  }
-  res.json({ message: "Transaction rejetée et recréditée" });
-});
-
-// NOUVEAU: Validation générale transactions (Dépôt/Retrait)
 app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
   const tx = await Transaction.findById(req.params.id);
   if (tx.type === "depot" && tx.status === "en_attente") {
@@ -457,16 +513,20 @@ app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
   }
   tx.status = "valide";
   await tx.save();
-  res.json({ message: "Validé" });
+  res.json({ message: "Transaction validée" });
 });
 
-// NOUVEAU: Suppression (Rejet) Obligation
-app.delete("/api/admin/bonds/:id", async (req, res) => {
-  await Bond.findByIdAndDelete(req.params.id);
-  res.json({ message: "Supprimé" });
+app.patch("/api/admin/transactions/:id/reject", async (req, res) => {
+  const tx = await Transaction.findById(req.params.id);
+  if (tx.status === "en_attente") {
+    await User.findByIdAndUpdate(tx.userId, { $inc: { balance: tx.amount } });
+    tx.status = "rejete";
+    tx.comment = req.body.reason; // Motif stocké dans 'comment' pour Wallet.jsx
+    await tx.save();
+  }
+  res.json({ message: "Transaction rejetée et utilisateur remboursé" });
 });
 
-// NOUVEAU: Distribution Dividendes (AdminPanel)
 app.post("/api/admin/distribute-dividends", async (req, res) => {
   const { actionId, amountPerShare } = req.body;
   const users = await User.find({ "portfolio.actionId": actionId });
@@ -484,10 +544,10 @@ app.post("/api/admin/distribute-dividends", async (req, res) => {
       status: "valide",
     }).save();
   }
-  res.json({ message: "Distribution terminée" });
+  res.json({ message: "Dividendes distribués avec succès" });
 });
 
-// --- PAIEMENTS ---
+// --- 11. PAIEMENTS PAYMOONEY & NOTIFICATIONS ---
 app.post("/api/payments/paymooney/init", async (req, res) => {
   try {
     const { userId, amount, email, name } = req.body;
@@ -518,5 +578,14 @@ app.post("/api/payments/paymooney/init", async (req, res) => {
   }
 });
 
+app.get("/api/notifications/:userId", async (req, res) =>
+  res.json(
+    await Notification.find({ userId: req.params.userId }).sort({ date: -1 })
+  )
+);
+
+// --- DÉMARRAGE ---
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🚀 Serveur Wilfried sur ${PORT}`));
+app.listen(PORT, () =>
+  console.log(`🚀 Serveur Wilfried 100% Opérationnel sur ${PORT}`)
+);
