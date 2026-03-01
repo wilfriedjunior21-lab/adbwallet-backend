@@ -301,7 +301,6 @@ app.get("/api/users/:id/balance", async (req, res) => {
 });
 
 // --- OBLIGATIONS (BONDS) ---
-// Route pour proposer (Déjà existante)
 app.post("/api/bonds/propose", async (req, res) => {
   try {
     const newBond = new Bond(req.body);
@@ -318,7 +317,6 @@ app.post("/api/bonds/propose", async (req, res) => {
   }
 });
 
-// NOUVELLE ROUTE : Pour afficher les obligations validées aux acheteurs (Evite la 404)
 app.get("/api/bonds", async (req, res) => {
   try {
     const bonds = await Bond.find({ status: "valide" }).sort({ createdAt: -1 });
@@ -328,11 +326,21 @@ app.get("/api/bonds", async (req, res) => {
   }
 });
 
-// --- SOUSCRIRE À UNE OBLIGATION (INVESTIR) ---
+// NOUVELLE ROUTE : Obligations spécifiques d'un actionnaire (Pour le dashboard)
+app.get("/api/obligations/owner/:userId", async (req, res) => {
+  try {
+    const bonds = await Bond.find({ actionnaireId: req.params.userId }).sort({
+      createdAt: -1,
+    });
+    res.json(bonds);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur récupération de vos obligations" });
+  }
+});
+
+// --- SOUSCRIRE À UNE OBLIGATION ---
 app.post("/api/transactions/subscribe-bond", async (req, res) => {
   const { userId, bondId, amount } = req.body;
-
-  // 1. Forcer la conversion et vérifier si c'est un nombre valide
   const numericAmount = parseFloat(amount);
 
   if (isNaN(numericAmount) || numericAmount <= 0) {
@@ -351,17 +359,12 @@ app.post("/api/transactions/subscribe-bond", async (req, res) => {
     if (!user) throw new Error("Utilisateur introuvable.");
     if (!bond) throw new Error("Obligation introuvable.");
 
-    // 2. Initialiser le solde à 0 si par défaut il est mal défini (évite le NaN)
     const currentBalance = typeof user.balance === "number" ? user.balance : 0;
-
     if (currentBalance < numericAmount) {
       throw new Error(`Solde insuffisant (${currentBalance} F).`);
     }
 
-    // 3. Calcul du nouveau solde
     user.balance = currentBalance - numericAmount;
-
-    // On force la validation avant de sauvegarder
     await user.save({ session });
 
     const bondTx = new Transaction({
@@ -392,10 +395,10 @@ app.post("/api/transactions/subscribe-bond", async (req, res) => {
     session.endSession();
   }
 });
+
 // --- ACTIONS ---
 app.get("/api/actions", async (req, res) => {
   try {
-    // Populate creatorId pour permettre la messagerie entre acheteur et vendeur
     res.json(
       await Action.find({ status: "valide" }).populate("creatorId", "name")
     );
