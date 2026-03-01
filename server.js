@@ -42,11 +42,7 @@ const upload = multer({ storage: storage });
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // --- CONFIGURATION PAYMOONEY ---
-const PAYMOONEY_PUBLIC_KEY =
-  process.env.PAYMOONEY_PUBLIC_KEY || "PK_d5M4k6BYZ1qaHegEJ8x7";
-const PAYMOONEY_PRIVATE_KEY =
-  process.env.PAYMOONEY_PRIVATE_KEY ||
-  "SK_k3fUZ2N4QeK0jybeg3hUxAsYW7Q9B3K8Z9d7sAcaC9DuV8TaX1m0w7ryhaLa";
+const PAYMOONEY_PUBLIC_KEY = "PK_d5M4k6BYZ1qaHegEJ8x7";
 
 // --- CONNEXION MONGODB ---
 mongoose
