@@ -116,7 +116,7 @@ const transactionSchema = new mongoose.Schema({
   quantity: Number,
   type: {
     type: String,
-    enum: ["achat", "vente", "depot", "retrait", "dividende"],
+    enum: ["achat", "vente", "depot", "retrait", "dividende", "coupon"],
   },
   status: {
     type: String,
@@ -223,7 +223,6 @@ app.post(
   }
 );
 
-// Route pour mettre à jour le nom/infos du profil
 app.put("/api/user/update/:id", async (req, res) => {
   try {
     const { name } = req.body;
@@ -285,9 +284,8 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-// --- ACTIONS (PROPOSITION & RÉCUPÉRATION) ---
+// --- ACTIONS ---
 
-// LA ROUTE QUI MANQUAIT :
 app.post("/api/actions/propose", async (req, res) => {
   try {
     const { name, price, totalQuantity, description, creatorId } = req.body;
@@ -340,6 +338,7 @@ app.patch("/api/actions/:id", async (req, res) => {
 });
 
 // --- OBLIGATIONS (BONDS) ---
+
 app.post("/api/bonds/propose", async (req, res) => {
   try {
     const newBond = new Bond(req.body);
@@ -353,6 +352,21 @@ app.post("/api/bonds/propose", async (req, res) => {
     res.status(201).json({ message: "Envoyé" });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// NOUVELLE ROUTE : Patch pour mettre à jour une obligation (demandé par le Dashboard)
+app.patch("/api/obligations/:id", async (req, res) => {
+  try {
+    const { tauxInteret, description } = req.body;
+    const bond = await Bond.findByIdAndUpdate(
+      req.params.id,
+      { tauxInteret, description },
+      { new: true }
+    );
+    res.json(bond);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur MAJ Obligation" });
   }
 });
 
@@ -377,6 +391,7 @@ app.get("/api/obligations/owner/:userId", async (req, res) => {
 });
 
 // --- PAYMOONEY & TRANSACTIONS ---
+
 app.post("/api/payments/paymooney/init", async (req, res) => {
   try {
     const { userId, amount, email, name } = req.body;
@@ -439,6 +454,18 @@ app.post("/api/payments/paymooney-notify", async (req, res) => {
     res.status(200).send("OK");
   } catch (error) {
     res.status(500).send("Erreur Notify");
+  }
+});
+
+// NOUVELLE ROUTE : Historique des transactions pour un utilisateur spécifique (Dashboard)
+app.get("/api/transactions/user/:userId", async (req, res) => {
+  try {
+    const txs = await Transaction.find({ userId: req.params.userId }).sort({
+      date: -1,
+    });
+    res.json(txs);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur historique" });
   }
 });
 
@@ -531,6 +558,7 @@ app.post("/api/transactions/withdraw", async (req, res) => {
 });
 
 // --- MESSAGERIE & ADMIN & NOTIFS ---
+
 app.get("/api/messages/owner/:userId", async (req, res) => {
   try {
     const msgs = await Message.find({ receiverId: req.params.userId })
@@ -540,6 +568,21 @@ app.get("/api/messages/owner/:userId", async (req, res) => {
     res.json(msgs);
   } catch (err) {
     res.status(500).json({ error: "Erreur" });
+  }
+});
+
+// NOUVELLE ROUTE : Répondre à un message (demandé par le Dashboard)
+app.patch("/api/messages/reply/:messageId", async (req, res) => {
+  try {
+    const { reply } = req.body;
+    const msg = await Message.findByIdAndUpdate(
+      req.params.messageId,
+      { reply },
+      { new: true }
+    );
+    res.json(msg);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur réponse message" });
   }
 });
 
