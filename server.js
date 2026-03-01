@@ -281,7 +281,7 @@ app.post("/api/payments/paymooney-notify", async (req, res) => {
   }
 });
 
-// --- ROUTES CORE ---
+// --- ROUTES CORE (UTILISATEURS) ---
 app.get("/api/user/:id", async (req, res) => {
   try {
     const user = await User.findById(req.params.id).select("-password");
@@ -326,19 +326,6 @@ app.get("/api/bonds", async (req, res) => {
   }
 });
 
-// Route par défaut utilisée par certains composants
-app.get("/api/bonds/list/owner/:userId", async (req, res) => {
-  try {
-    const bonds = await Bond.find({ actionnaireId: req.params.userId }).sort({
-      createdAt: -1,
-    });
-    res.json(bonds);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur récupération de vos obligations" });
-  }
-});
-
-// AJOUT : Route Alias pour corriger l'erreur 404 du Dashboard
 app.get("/api/obligations/owner/:userId", async (req, res) => {
   try {
     const bonds = await Bond.find({ actionnaireId: req.params.userId }).sort({
@@ -350,72 +337,41 @@ app.get("/api/obligations/owner/:userId", async (req, res) => {
   }
 });
 
-// --- SOUSCRIRE À UNE OBLIGATION ---
-app.post("/api/transactions/subscribe-bond", async (req, res) => {
-  const { userId, bondId, amount } = req.body;
-  const numericAmount = parseFloat(amount);
-
-  if (isNaN(numericAmount) || numericAmount <= 0) {
-    return res
-      .status(400)
-      .json({ error: "Le montant investi n'est pas un nombre valide." });
-  }
-
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const user = await User.findById(userId).session(session);
-    const bond = await Bond.findById(bondId).session(session);
-
-    if (!user) throw new Error("Utilisateur introuvable.");
-    if (!bond) throw new Error("Obligation introuvable.");
-
-    const currentBalance = typeof user.balance === "number" ? user.balance : 0;
-    if (currentBalance < numericAmount) {
-      throw new Error(`Solde insuffisant (${currentBalance} F).`);
-    }
-
-    user.balance = currentBalance - numericAmount;
-    await user.save({ session });
-
-    const bondTx = new Transaction({
-      userId,
-      amount: numericAmount,
-      type: "achat",
-      status: "valide",
-      comment: `Investissement : ${bond.titre}`,
-      date: new Date(),
-    });
-    await bondTx.save({ session });
-
-    await createNotify(
-      userId,
-      "Investissement validé",
-      `Vous avez investi ${numericAmount.toLocaleString()} F dans ${
-        bond.titre
-      }.`,
-      "success"
-    );
-
-    await session.commitTransaction();
-    res.json({ message: "Souscription réussie", newBalance: user.balance });
-  } catch (err) {
-    await session.abortTransaction();
-    res.status(400).json({ error: err.message });
-  } finally {
-    session.endSession();
-  }
-});
-
 // --- ACTIONS ---
 app.get("/api/actions", async (req, res) => {
   try {
-    res.json(
-      await Action.find({ status: "valide" }).populate("creatorId", "name")
-    );
+    res.json(await Action.find().populate("creatorId", "name"));
   } catch (err) {
     res.status(500).json({ error: "Erreur" });
+  }
+});
+
+// --- MISE À JOUR PAR L'ACTIONNAIRE (FIX ERREUR 404 DASHBOARD) ---
+app.patch("/api/actions/:id", async (req, res) => {
+  try {
+    const { price, description } = req.body;
+    const action = await Action.findByIdAndUpdate(
+      req.params.id,
+      { price, description },
+      { new: true }
+    );
+    res.json(action);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur MAJ Action" });
+  }
+});
+
+app.patch("/api/obligations/:id", async (req, res) => {
+  try {
+    const { tauxInteret, description } = req.body;
+    const bond = await Bond.findByIdAndUpdate(
+      req.params.id,
+      { tauxInteret, description },
+      { new: true }
+    );
+    res.json(bond);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur MAJ Obligation" });
   }
 });
 
@@ -453,15 +409,14 @@ app.post("/api/transactions/buy", async (req, res) => {
         { $inc: { balance: totalCost } },
         { session }
       );
-      const sellerTx = new Transaction({
+      await new Transaction({
         userId: action.creatorId,
         actionId,
         quantity,
         amount: totalCost,
         type: "vente",
         status: "valide",
-      });
-      await sellerTx.save({ session });
+      }).save({ session });
     }
 
     action.price = Math.round(
@@ -520,6 +475,20 @@ app.get("/api/messages/owner/:userId", async (req, res) => {
       .populate("actionId", "name")
       .sort({ createdAt: -1 });
     res.json(msgs);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur" });
+  }
+});
+
+app.patch("/api/messages/reply/:id", async (req, res) => {
+  try {
+    const { reply } = req.body;
+    const msg = await Message.findByIdAndUpdate(
+      req.params.id,
+      { reply },
+      { new: true }
+    );
+    res.json(msg);
   } catch (err) {
     res.status(500).json({ error: "Erreur" });
   }
@@ -615,27 +584,6 @@ app.patch("/api/admin/transactions/:id/reject", async (req, res) => {
   tx.comment = req.body.reason;
   await tx.save();
   res.json({ message: "Rejeté" });
-});
-
-app.post("/api/admin/distribute-dividends", async (req, res) => {
-  const { actionId, amountPerShare } = req.body;
-  const purchases = await Transaction.find({
-    actionId,
-    type: "achat",
-    status: "valide",
-  });
-  for (let tx of purchases) {
-    const div = tx.quantity * amountPerShare;
-    await User.findByIdAndUpdate(tx.userId, { $inc: { balance: div } });
-    await new Transaction({
-      userId: tx.userId,
-      actionId,
-      amount: div,
-      type: "dividende",
-      status: "valide",
-    }).save();
-  }
-  res.json({ message: "Distribués" });
 });
 
 app.get("/api/notifications/:userId", async (req, res) => {
