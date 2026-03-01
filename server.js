@@ -9,12 +9,9 @@ const { v4: uuidv4 } = require("uuid");
 const multer = require("multer");
 const cloudinary = require("cloudinary").v2;
 const { CloudinaryStorage } = require("multer-storage-cloudinary");
-const path = require("path");
 
 const app = express();
 app.use(express.json());
-
-// --- CONFIGURATION CORS ---
 app.use(
   cors({
     origin: "*",
@@ -32,16 +29,13 @@ cloudinary.config({
 
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
-  params: {
+  params: async (req, file) => ({
     folder: "adb_wallet_profiles",
     allowed_formats: ["jpg", "png", "jpeg"],
-  },
+    public_id: `profile-${req.params.userId || uuidv4()}-${Date.now()}`,
+  }),
 });
-
-const upload = multer({ storage: storage });
-
-// --- CONFIGURATION PAYMOONEY ---
-const PAYMOONEY_PUBLIC_KEY = "PK_d5M4k6BYZ1qaHegEJ8x7";
+const upload = multer({ storage });
 
 // --- CONNEXION MONGODB ---
 mongoose
@@ -52,292 +46,261 @@ mongoose
   })
   .catch((err) => console.error("❌ Erreur MongoDB:", err));
 
-// --- TOUS LES MODÈLES (COMPLET) ---
-const userSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  email: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
-  role: {
-    type: String,
-    enum: ["admin", "actionnaire", "acheteur"],
-    default: "acheteur",
-  },
-  balance: { type: Number, default: 0 },
-  profilePic: { type: String, default: "" },
-  kycStatus: {
-    type: String,
-    enum: ["non_verifie", "en_attente", "valide"],
-    default: "non_verifie",
-  },
-  kycDocUrl: { type: String, default: "" },
-});
+// --- TOUS LES MODÈLES RÉTABLIS ---
+const User = mongoose.model(
+  "User",
+  new mongoose.Schema({
+    name: { type: String, required: true },
+    email: { type: String, required: true, unique: true },
+    password: { type: String, required: true },
+    role: {
+      type: String,
+      enum: ["admin", "actionnaire", "acheteur"],
+      default: "acheteur",
+    },
+    balance: { type: Number, default: 0 },
+    profilePic: { type: String, default: "" },
+    kycStatus: {
+      type: String,
+      enum: ["non_verifie", "en_attente", "valide"],
+      default: "non_verifie",
+    },
+    kycDocUrl: { type: String, default: "" },
+  })
+);
 
-const actionSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  price: { type: Number, required: true },
-  totalQuantity: { type: Number, required: true },
-  availableQuantity: { type: Number, required: true },
-  description: String,
-  status: {
-    type: String,
-    enum: ["en_attente", "valide"],
-    default: "en_attente",
-  },
-  creatorId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-  createdAt: { type: Date, default: Date.now },
-});
+const Action = mongoose.model(
+  "Action",
+  new mongoose.Schema({
+    name: { type: String, required: true },
+    price: { type: Number, required: true },
+    totalQuantity: { type: Number, required: true },
+    availableQuantity: { type: Number, required: true },
+    description: String,
+    status: {
+      type: String,
+      enum: ["en_attente", "valide"],
+      default: "en_attente",
+    },
+    creatorId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    createdAt: { type: Date, default: Date.now },
+  })
+);
 
-const bondSchema = new mongoose.Schema({
-  titre: { type: String, required: true },
-  montantCible: { type: Number, required: true },
-  montantCollecte: { type: Number, default: 0 },
-  tauxInteret: { type: Number, required: true },
-  dureeMois: { type: Number, required: true },
-  frequence: { type: String, required: true },
-  garantie: { type: Number, required: true },
-  description: String,
-  actionnaireId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-  status: {
-    type: String,
-    enum: ["en_attente", "valide", "cloture"],
-    default: "en_attente",
-  },
-  createdAt: { type: Date, default: Date.now },
-});
+const Bond = mongoose.model(
+  "Bond",
+  new mongoose.Schema({
+    titre: { type: String, required: true },
+    montantCible: { type: Number, required: true },
+    montantCollecte: { type: Number, default: 0 },
+    tauxInteret: { type: Number, required: true },
+    dureeMois: { type: Number, required: true },
+    frequence: { type: String, required: true },
+    garantie: { type: Number, required: true },
+    description: String,
+    actionnaireId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    status: {
+      type: String,
+      enum: ["en_attente", "valide", "cloture"],
+      default: "en_attente",
+    },
+    createdAt: { type: Date, default: Date.now },
+  })
+);
 
-const transactionSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-  actionId: { type: mongoose.Schema.Types.ObjectId, ref: "Action" },
-  bondId: { type: mongoose.Schema.Types.ObjectId, ref: "Bond" },
-  amount: Number,
-  quantity: Number,
-  type: {
-    type: String,
-    enum: [
-      "achat",
-      "vente",
-      "depot",
-      "retrait",
-      "dividende",
-      "coupon",
-      "souscription_obligation",
-    ],
-  },
-  status: {
-    type: String,
-    enum: ["en_attente", "valide", "rejete"],
-    default: "valide",
-  },
-  recipientPhone: { type: String, default: "" },
-  paymentNumber: { type: String, default: "" },
-  date: { type: Date, default: Date.now },
-  referenceId: { type: String },
-  paymentId: { type: String },
-  comment: String,
-});
+const Transaction = mongoose.model(
+  "Transaction",
+  new mongoose.Schema({
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    actionId: { type: mongoose.Schema.Types.ObjectId, ref: "Action" },
+    bondId: { type: mongoose.Schema.Types.ObjectId, ref: "Bond" },
+    amount: Number,
+    quantity: Number,
+    type: {
+      type: String,
+      enum: [
+        "achat",
+        "vente",
+        "depot",
+        "retrait",
+        "dividende",
+        "coupon",
+        "souscription_obligation",
+      ],
+    },
+    status: {
+      type: String,
+      enum: ["en_attente", "valide", "rejete"],
+      default: "valide",
+    },
+    recipientPhone: { type: String, default: "" },
+    paymentNumber: { type: String, default: "" },
+    date: { type: Date, default: Date.now },
+    referenceId: String,
+    comment: String,
+  })
+);
 
-const notificationSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-  title: String,
-  message: String,
-  type: {
-    type: String,
-    enum: ["info", "success", "warning", "retrait"],
-    default: "info",
-  },
-  read: { type: Boolean, default: false },
-  date: { type: Date, default: Date.now },
-});
+const Notification = mongoose.model(
+  "Notification",
+  new mongoose.Schema({
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    title: String,
+    message: String,
+    type: {
+      type: String,
+      enum: ["info", "success", "warning", "retrait"],
+      default: "info",
+    },
+    read: { type: Boolean, default: false },
+    date: { type: Date, default: Date.now },
+  })
+);
 
-const messageSchema = new mongoose.Schema({
-  actionId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "Action",
-    required: true,
-  },
-  senderId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "User",
-    required: true,
-  },
-  receiverId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "User",
-    required: true,
-  },
-  content: { type: String, required: true },
-  reply: { type: String, default: "" },
-  createdAt: { type: Date, default: Date.now },
-});
+const Message = mongoose.model(
+  "Message",
+  new mongoose.Schema({
+    actionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Action",
+      required: true,
+    },
+    senderId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
+    receiverId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
+    content: { type: String, required: true },
+    reply: { type: String, default: "" },
+    createdAt: { type: Date, default: Date.now },
+  })
+);
 
-const User = mongoose.model("User", userSchema);
-const Action = mongoose.model("Action", actionSchema);
-const Bond = mongoose.model("Bond", bondSchema);
-const Transaction = mongoose.model("Transaction", transactionSchema);
-const Notification = mongoose.model("Notification", notificationSchema);
-const Message = mongoose.model("Message", messageSchema);
-
-// --- FONCTIONS ET MOTEUR ---
-const createNotify = async (userId, title, message, type = "info") => {
-  try {
-    const notify = new Notification({ userId, title, message, type });
-    await notify.save();
-  } catch (err) {
-    console.error("Erreur Notification:", err);
-  }
-};
-
+// --- MOTEUR DE MARCHÉ ---
 const startMarketEngine = () => {
-  console.log("🚀 Moteur de Marché activé (cycle: 30 min)");
   setInterval(async () => {
     try {
       const actions = await Action.find({ status: "valide" });
-      for (let action of actions) {
-        const changePercent = (Math.random() * 4 - 1.5) / 100;
-        const newPrice = Math.round(action.price * (1 + changePercent));
-        action.price = newPrice < 10 ? 10 : newPrice;
-        await action.save();
+      for (let a of actions) {
+        let change = (Math.random() * 4 - 1.5) / 100;
+        a.price = Math.max(10, Math.round(a.price * (1 + change)));
+        await a.save();
       }
-    } catch (err) {
-      console.error("Erreur Market Engine:", err);
+    } catch (e) {
+      console.error("Market Engine Error:", e);
     }
   }, 30 * 60 * 1000);
 };
 
-// --- ROUTES UTILISATEUR & PROFIL ---
+// --- ROUTES PROFIL & KYC (CLOUDINARY) ---
 app.post(
   "/api/user/upload-profile-pic/:userId",
   upload.single("image"),
   async (req, res) => {
     try {
-      if (!req.file) return res.status(400).json({ error: "Aucun fichier" });
-      const imageUrl = req.file.path;
-      const updatedUser = await User.findByIdAndUpdate(
+      if (!req.file) return res.status(400).json({ error: "Fichier manquant" });
+      const user = await User.findByIdAndUpdate(
         req.params.userId,
-        { profilePic: imageUrl },
+        { profilePic: req.file.path },
         { new: true }
-      ).select("-password");
-      res.json(updatedUser);
-    } catch (err) {
-      res.status(500).json({ error: "Erreur Cloudinary" });
+      );
+      res.json(user);
+    } catch (e) {
+      res.status(500).json({ error: "Erreur Upload" });
     }
   }
 );
-
-app.put("/api/user/update/:id", async (req, res) => {
-  try {
-    const { name } = req.body;
-    const user = await User.findByIdAndUpdate(
-      req.params.id,
-      { name },
-      { new: true }
-    ).select("-password");
-    res.json(user);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
 
 app.get("/api/user/:id", async (req, res) => {
   try {
     const user = await User.findById(req.params.id).select("-password");
     res.json(user);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
+  } catch (e) {
+    res.status(404).json({ error: "Utilisateur non trouvé" });
   }
 });
+
+// --- ROUTES BALANCE (RÉSOLUTION 404 WALLET) ---
+app.get(
+  ["/api/user/:id/balance", "/api/users/:id/balance"],
+  async (req, res) => {
+    try {
+      const user = await User.findById(req.params.id);
+      res.json({ balance: user ? user.balance : 0 });
+    } catch (e) {
+      res.status(500).json({ error: "Erreur solde" });
+    }
+  }
+);
 
 // --- AUTHENTIFICATION ---
 app.post("/api/auth/register", async (req, res) => {
   try {
-    const { name, email, password, role } = req.body;
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const user = new User({ name, email, password: hashedPassword, role });
+    const hash = await bcrypt.hash(req.body.password, 10);
+    const user = new User({ ...req.body, password: hash });
     await user.save();
-    res.status(201).json({ message: "Créé" });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(201).json({ message: "OK" });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
 app.post("/api/auth/login", async (req, res) => {
-  const { email, password } = req.body;
   try {
-    const user = await User.findOne({ email });
-    if (!user || !(await bcrypt.compare(password, user.password)))
-      return res.status(400).json({ error: "Invalide" });
-    const token = jwt.sign(
-      { id: user._id, role: user.role },
-      process.env.JWT_SECRET || "SECRET",
-      { expiresIn: "1d" }
-    );
-    res.json({
-      token,
-      userId: user._id,
-      role: user.role,
-      name: user.name,
-      email: user.email,
-      profilePic: user.profilePic,
-    });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
+    const user = await User.findOne({ email: req.body.email });
+    if (user && (await bcrypt.compare(req.body.password, user.password))) {
+      const token = jwt.sign({ id: user._id, role: user.role }, "SECRET", {
+        expiresIn: "1d",
+      });
+      res.json({
+        token,
+        userId: user._id,
+        role: user.role,
+        name: user.name,
+        email: user.email,
+        profilePic: user.profilePic,
+      });
+    } else res.status(400).json({ error: "Identifiants invalides" });
+  } catch (e) {
+    res.status(500).json({ error: "Erreur login" });
   }
 });
 
-// --- ACTIONS & MARCHÉ ---
+// --- ACTIONS & BOURSE ---
+app.get("/api/actions", async (req, res) =>
+  res.json(await Action.find().populate("creatorId", "name profilePic"))
+);
+
 app.post("/api/actions/propose", async (req, res) => {
   try {
-    const newAction = new Action({ ...req.body, status: "en_attente" });
-    await newAction.save();
-    await createNotify(
-      req.body.creatorId,
-      "Soumission",
-      "Votre actif est en examen."
-    );
-    res.status(201).json({ message: "Succès" });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get("/api/actions", async (req, res) => {
-  try {
-    const actions = await Action.find().populate(
-      "creatorId",
-      "name profilePic"
-    );
-    res.json(actions);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
-app.patch("/api/actions/:id", async (req, res) => {
-  try {
-    const action = await Action.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
+    const action = new Action({
+      ...req.body,
+      availableQuantity: req.body.totalQuantity,
+      status: "en_attente",
     });
-    res.json(action);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
+    await action.save();
+    res.status(201).json({ message: "OK" });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
-// --- TRANSACTIONS (ACHAT/VENTE/SOLDE) ---
 app.post("/api/transactions/buy", async (req, res) => {
   const { userId, actionId, quantity } = req.body;
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  try {
-    const user = await User.findById(userId).session(session);
-    const action = await Action.findById(actionId).session(session);
-    const cost = action.price * quantity;
-    if (user.balance < cost) throw new Error("Solde insuffisant");
+  const user = await User.findById(userId);
+  const action = await Action.findById(actionId);
+  const cost = action.price * quantity;
+  if (user.balance >= cost && action.availableQuantity >= quantity) {
     user.balance -= cost;
-    await user.save({ session });
+    await user.save();
     action.availableQuantity -= quantity;
     action.price = Math.round(action.price + action.price * 0.0005 * quantity);
-    await action.save({ session });
+    await action.save();
     await new Transaction({
       userId,
       actionId,
@@ -345,101 +308,122 @@ app.post("/api/transactions/buy", async (req, res) => {
       amount: cost,
       type: "achat",
       status: "valide",
-    }).save({ session });
-    await session.commitTransaction();
-    res.json({ message: "Succès" });
-  } catch (err) {
-    await session.abortTransaction();
-    res.status(500).json({ error: err.message });
-  } finally {
-    session.endSession();
-  }
+    }).save();
+    res.json({ message: "Achat réussi" });
+  } else res.status(400).json({ error: "Solde ou stock insuffisant" });
 });
 
 app.post("/api/transactions/sell", async (req, res) => {
   const { userId, actionId, quantity } = req.body;
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  try {
-    const user = await User.findById(userId).session(session);
-    const action = await Action.findById(actionId).session(session);
-    const gain = action.price * quantity;
-    user.balance += gain;
-    await user.save({ session });
-    action.availableQuantity += Number(quantity);
-    action.price = Math.round(action.price - action.price * 0.0003 * quantity);
-    await action.save({ session });
-    await new Transaction({
-      userId,
-      actionId,
-      quantity,
-      amount: gain,
-      type: "vente",
-      status: "valide",
-    }).save({ session });
-    await session.commitTransaction();
-    res.json({ message: "Succès" });
-  } catch (err) {
-    await session.abortTransaction();
-    res.status(500).json({ error: err.message });
-  } finally {
-    session.endSession();
-  }
+  const user = await User.findById(userId);
+  const action = await Action.findById(actionId);
+  const gain = action.price * quantity;
+  user.balance += gain;
+  await user.save();
+  action.availableQuantity += Number(quantity);
+  action.price = Math.max(
+    10,
+    Math.round(action.price - action.price * 0.0003 * quantity)
+  );
+  await action.save();
+  await new Transaction({
+    userId,
+    actionId,
+    quantity,
+    amount: gain,
+    type: "vente",
+    status: "valide",
+  }).save();
+  res.json({ message: "Vente réussie" });
 });
 
 // --- OBLIGATIONS (BONDS) ---
+app.get("/api/bonds", async (req, res) =>
+  res.json(await Bond.find({ status: "valide" }))
+);
+app.get("/api/obligations/owner/:userId", async (req, res) =>
+  res.json(await Bond.find({ actionnaireId: req.params.userId }))
+);
 app.post("/api/bonds/propose", async (req, res) => {
+  await new Bond(req.body).save();
+  res.json({ message: "OK" });
+});
+
+// --- MESSAGERIE & CHAT ---
+app.get("/api/messages/chat/:userId/:contactId", async (req, res) => {
   try {
-    const bond = new Bond(req.body);
-    await bond.save();
-    res.status(201).json({ message: "Envoyé" });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    const msgs = await Message.find({
+      $or: [
+        { senderId: req.params.userId, receiverId: req.params.contactId },
+        { senderId: req.params.contactId, receiverId: req.params.userId },
+      ],
+    })
+      .populate("senderId", "name profilePic")
+      .sort({ createdAt: 1 });
+    res.json(msgs);
+  } catch (e) {
+    res.status(500).json({ error: "Erreur chat" });
   }
 });
 
-app.get("/api/bonds", async (req, res) => {
-  try {
-    const bonds = await Bond.find({ status: "valide" }).sort({ createdAt: -1 });
-    res.json(bonds);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
+app.post("/api/messages/send", async (req, res) =>
+  res.json(await new Message(req.body).save())
+);
+
+// --- ADMIN & GESTION ---
+app.get("/api/admin/users", async (req, res) =>
+  res.json(await User.find().select("-password").sort({ name: 1 }))
+);
+app.get("/api/admin/actions", async (req, res) =>
+  res.json(await Action.find().populate("creatorId", "name"))
+);
+app.get("/api/admin/bonds", async (req, res) =>
+  res.json(await Bond.find().populate("actionnaireId", "name"))
+);
+app.get("/api/admin/transactions", async (req, res) =>
+  res.json(
+    await Transaction.find().populate("userId", "name").sort({ date: -1 })
+  )
+);
+
+app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
+  const tx = await Transaction.findById(req.params.id);
+  if (tx.type === "depot" && tx.status === "en_attente") {
+    await User.findByIdAndUpdate(tx.userId, { $inc: { balance: tx.amount } });
   }
+  tx.status = "valide";
+  await tx.save();
+  res.json({ message: "Transaction validée" });
 });
 
-app.get("/api/obligations/owner/:userId", async (req, res) => {
-  try {
-    const bonds = await Bond.find({ actionnaireId: req.params.userId }).sort({
-      createdAt: -1,
-    });
-    res.json(bonds);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
+app.post("/api/admin/distribute-dividends", async (req, res) => {
+  const { actionId, totalAmount } = req.body;
+  const txs = await Transaction.find({ actionId, status: "valide" });
+  let owns = {};
+  let total = 0;
+  txs.forEach((t) => {
+    owns[t.userId] =
+      (owns[t.userId] || 0) + (t.type === "achat" ? t.quantity : -t.quantity);
+  });
+  Object.values(owns).forEach((v) => {
+    if (v > 0) total += v;
+  });
+  if (total <= 0) return res.status(400).json({ error: "Aucun actionnaire" });
 
-app.post("/api/transactions/subscribe-bond", async (req, res) => {
-  const { userId, bondId, amount } = req.body;
-  try {
-    const user = await User.findById(userId);
-    const bond = await Bond.findById(bondId);
-    if (user.balance < amount)
-      return res.status(400).json({ error: "Solde insuffisant" });
-    user.balance -= Number(amount);
-    bond.montantCollecte += Number(amount);
-    await user.save();
-    await bond.save();
-    await new Transaction({
-      userId,
-      bondId,
-      amount,
-      type: "souscription_obligation",
-      status: "valide",
-    }).save();
-    res.json({ message: "Succès" });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
+  for (let id in owns) {
+    if (owns[id] > 0) {
+      const div = Math.round((owns[id] / total) * totalAmount);
+      await User.findByIdAndUpdate(id, { $inc: { balance: div } });
+      await new Transaction({
+        userId: id,
+        actionId,
+        amount: div,
+        type: "dividende",
+        status: "valide",
+      }).save();
+    }
   }
+  res.json({ message: "Dividendes distribués" });
 });
 
 // --- PAYMOONEY & RETRAITS ---
@@ -453,8 +437,8 @@ app.post("/api/payments/paymooney/init", async (req, res) => {
         amount: amount.toString(),
         currency_code: "XAF",
         item_ref: ref,
-        item_name: "Depot",
-        public_key: PAYMOONEY_PUBLIC_KEY,
+        item_name: "Depot ADB",
+        public_key: "PK_d5M4k6BYZ1qaHegEJ8x7",
         lang: "fr",
         first_name: name,
         email,
@@ -469,152 +453,44 @@ app.post("/api/payments/paymooney/init", async (req, res) => {
     }).save();
     res.json({ payment_url: response.data.payment_url });
   } catch (error) {
-    res.status(500).json({ error: "Erreur" });
+    res.status(500).json({ error: "Erreur Paymooney" });
   }
 });
 
 app.post("/api/transactions/withdraw", async (req, res) => {
   try {
     const user = await User.findById(req.body.userId);
-    if (user.balance < req.body.amount)
-      return res.status(400).json({ error: "Insuffisant" });
-    user.balance -= Number(req.body.amount);
-    await user.save();
-    await new Transaction({
-      ...req.body,
-      type: "retrait",
-      status: "en_attente",
-    }).save();
-    res.json({ message: "Demande envoyée" });
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
-// --- MESSAGERIE & CHAT ---
-app.get("/api/messages/owner/:userId", async (req, res) => {
-  try {
-    const msgs = await Message.find({ receiverId: req.params.userId })
-      .populate("senderId", "name")
-      .populate("actionId", "name")
-      .sort({ createdAt: -1 });
-    res.json(msgs);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
-app.get("/api/messages/chat/:userId/:contactId", async (req, res) => {
-  try {
-    const chat = await Message.find({
-      $or: [
-        { senderId: req.params.userId, receiverId: req.params.contactId },
-        { senderId: req.params.contactId, receiverId: req.params.userId },
-      ],
-    })
-      .populate("senderId", "name profilePic")
-      .sort({ createdAt: 1 });
-    res.json(chat);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
-app.post("/api/messages/send", async (req, res) => {
-  try {
-    const msg = new Message(req.body);
-    await msg.save();
-    res.status(201).json(msg);
-  } catch (err) {
-    res.status(500).json({ error: "Erreur" });
-  }
-});
-
-// --- ADMIN (TOUTES LES ROUTES RÉTABLIES) ---
-app.get("/api/admin/users", async (req, res) =>
-  res.json(await User.find().select("-password").sort({ name: 1 }))
-);
-app.get("/api/admin/actions", async (req, res) =>
-  res.json(
-    await Action.find().populate("creatorId", "name").sort({ createdAt: -1 })
-  )
-);
-app.get("/api/admin/bonds", async (req, res) =>
-  res.json(
-    await Bond.find().populate("actionnaireId", "name").sort({ createdAt: -1 })
-  )
-);
-app.get("/api/admin/transactions", async (req, res) =>
-  res.json(
-    await Transaction.find().populate("userId", "name").sort({ date: -1 })
-  )
-);
-
-app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
-  const tx = await Transaction.findById(req.params.id);
-  if (tx.type === "depot" && tx.status === "en_attente")
-    await User.findByIdAndUpdate(tx.userId, { $inc: { balance: tx.amount } });
-  tx.status = "valide";
-  await tx.save();
-  res.json({ message: "Validé" });
-});
-
-app.patch("/api/admin/transactions/:id/reject", async (req, res) => {
-  const tx = await Transaction.findById(req.params.id);
-  tx.status = "rejete";
-  await tx.save();
-  if (tx.type === "retrait")
-    await User.findByIdAndUpdate(tx.userId, { $inc: { balance: tx.amount } });
-  res.json({ message: "Rejeté" });
-});
-
-app.post("/api/admin/distribute-dividends", async (req, res) => {
-  const { actionId, totalAmount } = req.body;
-  const txs = await Transaction.find({ actionId, status: "valide" });
-  let ownership = {};
-  let totalOwned = 0;
-  txs.forEach((t) => {
-    if (!ownership[t.userId]) ownership[t.userId] = 0;
-    if (t.type === "achat") ownership[t.userId] += t.quantity;
-    if (t.type === "vente") ownership[t.userId] -= t.quantity;
-  });
-  Object.values(ownership).forEach((v) => (totalOwned += v));
-  for (let uId in ownership) {
-    if (ownership[uId] > 0) {
-      const div = Math.round((ownership[uId] / totalOwned) * totalAmount);
-      await User.findByIdAndUpdate(uId, { $inc: { balance: div } });
+    if (user.balance >= req.body.amount) {
+      user.balance -= req.body.amount;
+      await user.save();
       await new Transaction({
-        userId: uId,
-        actionId,
-        amount: div,
-        type: "dividende",
-        status: "valide",
+        ...req.body,
+        type: "retrait",
+        status: "en_attente",
       }).save();
-    }
+      res.json({ message: "Demande envoyée" });
+    } else res.status(400).json({ error: "Solde insuffisant" });
+  } catch (e) {
+    res.status(500).json({ error: "Erreur" });
   }
-  res.json({ message: "Distribué" });
 });
 
 // --- NOTIFICATIONS & HISTORIQUE ---
-app.get("/api/notifications/:userId", async (req, res) => {
+app.get("/api/notifications/:userId", async (req, res) =>
   res.json(
-    await Notification.find({ userId: req.params.userId })
-      .sort({ date: -1 })
-      .limit(10)
-  );
-});
-
-app.get("/api/transactions/user/:userId", async (req, res) => {
+    await Notification.find({ userId: req.params.userId }).sort({ date: -1 })
+  )
+);
+app.get("/api/transactions/user/:userId", async (req, res) =>
   res.json(
     await Transaction.find({ userId: req.params.userId })
-      .populate("actionId", "name")
-      .populate("bondId", "titre")
+      .populate("actionId bondId")
       .sort({ date: -1 })
-  );
-});
+  )
+);
 
 // --- DÉMARRAGE ---
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () =>
-  console.log(`🚀 Serveur Wilfried opérationnel sur le port ${PORT}`)
+  console.log(`🚀 Serveur Wilfried 100% Opérationnel sur ${PORT}`)
 );
