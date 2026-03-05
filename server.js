@@ -9,7 +9,7 @@ const { v4: uuidv4 } = require("uuid");
 const multer = require("multer");
 const cloudinary = require("cloudinary").v2;
 const { CloudinaryStorage } = require("multer-storage-cloudinary");
-const nodemailer = require("nodemailer"); // AJOUTÉ : Pour les emails
+const nodemailer = require("nodemailer");
 
 const app = express();
 app.use(express.json());
@@ -76,8 +76,8 @@ const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: async (req, file) => ({
     folder: "adb_wallet_profiles",
-    allowed_formats: ["jpg", "png", "jpeg"],
-    public_id: `profile-${req.params.userId || uuidv4()}-${Date.now()}`,
+    allowed_formats: ["jpg", "png", "jpeg", "pdf"], // Ajout PDF pour la CNI
+    public_id: `doc-${req.params.userId || uuidv4()}-${Date.now()}`,
   }),
 });
 const upload = multer({ storage });
@@ -105,6 +105,10 @@ const User = mongoose.model(
     },
     balance: { type: Number, default: 0 },
     profilePic: { type: String, default: "" },
+    // AJOUT CHAMPS ACTIONNAIRE PRO
+    niu: { type: String, default: "" },
+    nomDirigeant: { type: String, default: "" },
+    cniUrl: { type: String, default: "" },
     kycStatus: {
       type: String,
       enum: ["non_verifie", "en_attente", "valide"],
@@ -271,6 +275,34 @@ app.post("/api/auth/login", async (req, res) => {
 });
 
 // --- 6. ROUTES UTILISATEUR & PROFIL ---
+
+// NOUVELLE ROUTE : UPGRADE ACTIONNAIRE (NIU, NOM, CNI)
+app.post(
+  "/api/user/upgrade-to-shareholder",
+  upload.single("cni"),
+  async (req, res) => {
+    try {
+      const { userId, niu, nomDirigeant } = req.body;
+      const updateData = {
+        niu,
+        nomDirigeant,
+        kycStatus: "en_attente",
+      };
+
+      if (req.file) {
+        updateData.cniUrl = req.file.path;
+      }
+
+      const user = await User.findByIdAndUpdate(userId, updateData, {
+        new: true,
+      });
+      res.json({ message: "Dossier envoyé avec succès", user });
+    } catch (e) {
+      res.status(500).json({ error: "Erreur lors de l'envoi du dossier" });
+    }
+  }
+);
+
 app.get("/api/user/:id", async (req, res) => {
   try {
     res.json(
