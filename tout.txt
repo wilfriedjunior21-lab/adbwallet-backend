@@ -1,31 +1,95 @@
-mongodb+srv://wilfriedjunior21_adb:wilfried#2005@clusteradbwallet.f4jeap2.mongodb.net/?appName=Clusteradbwallet
-129.0.213.195/32
-mongodb+srv://wilfriedjunior21_adb:wilfried2005@clusteradbwallet.f4jeap2.mongodb.net/?appName=Clusteradbwallet
-129.0.204.240/32
-voice ce que je veux je veux qu'on fasse une application fintech ou comme tu le sais bien des actionnaires viendront s'inscrire dans l'application et mettre en vente leur actions dans l'appli, et des acheteurs viendront aussi s'inscrire dans lapplication et verront 
-les actions que les actionnaires inscrits publieront, et par derriere un admin qui controllera toutes les transactions qui se feront a l'interieur de lapplication, donc je veux que toutes les donnees sortes de la bases de donnee et que l'application soit parfaites je veux le frontend et le backend les donnees qui safficheront sur 
-le frontend doivent sortir de la base de donnee, les acheteurs auront une page principale ou ils verront leurs soldes et une pages ou ils verront lhistorique de leurs transactions
+import React, { useState, useEffect } from "react";
+import { StyleSheet, View, Platform, StatusBar, Text } from "react-native";
+import { WebView } from "react-native-webview";
+import NetInfo from "@react-native-community/netinfo";
 
+export default function App() {
+  const [isConnected, setIsConnected] = useState(true);
 
+  // Vérification de la connexion internet en temps réel
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener(state => {
+      setIsConnected(state.isConnected);
+    });
+    return () => unsubscribe();
+  }, []);
 
+  // Écran de secours si l'utilisateur n'a pas internet
+  if (!isConnected) {
+    return (
+      <View style={styles.errorContainer}>
+        <StatusBar barStyle="light-content" backgroundColor="#000" />
+        <Text style={styles.errorEmoji}>📡</Text>
+        <Text style={styles.errorText}>Connexion interrompue</Text>
+        <Text style={styles.errorSubText}>Veuillez vérifier votre accès réseau pour utiliser ADBWALLET.</Text>
+      </View>
+    );
+  }
 
-voici mon dasboardacheteur.jsx donne moi le code complet sans enlever ou modifier les anciennes fonctionnalite stp je veux pas perdre cela
+  return (
+    <View style={styles.container}>
+      <StatusBar barStyle="light-content" backgroundColor="#000" />
 
-servicesecret=j1msLZWxiTrVTGN1HJWtiSJ38HHB4BDOWYkPOIdkDoyQxwIAUDTjxdAW0LtJbcAI
+      <WebView
+        source={{ uri: "https://adbwallet-frontend.pages.dev" }}
+        style={styles.webview}
+        javaScriptEnabled={true}
+        domStorageEnabled={true}
+        startInLoadingState={true}
+        // Couleur de fond pendant le chargement pour éviter le flash blanc
+        backgroundColor="#000" 
+      />
 
-https://vscode.dev/github/wilfriedjunior21-lab/adbwallet-backend/blob/main
+      <View style={styles.footer}>
+        <Text style={styles.footerText}>© COPYRIGHT ADBWALLET 2025</Text>
+      </View>
+    </View>
+  );
+}
 
-TrcaKxIUtH8xriSALUX91FAnAg-jcX18_vOeHudzc0ShxEDubOfR6rrG7a8NhD8V65n9D_X7fOTyHQRj6ijkyQ
-
-TrcaKxIUtH8xriSALUX91FAnAg-jcX18_vOeHudzc0ShxEDubOfR6rrG7a8NhD8V65n9D_X7fOTyHQRj6ijkyQ
-
-5dd582806c9d02560611203da1e796627bac60b8  jetton
-
-r9SNzI58_Gk1-0iu9qG0lGzrG9OefkO2HJPa1KtGartwa56otG_5zIC1zGnmgNiIhhFsjojLZFyF85-BSt0hvw user
-
-ZanVmW0z5No950b0ljnOCDk2z4eNqBC4u4MHYAfDBxpQNSYjSNVpkvadiGyXiuEMGgIZD35wgWwG7Z3ihNqYrw  mdp
-
-C3GGQLoKJr9Ovi4ihBZrb5WD8bF_RrhzKsDUnub-8u4SnwGDUwRlrR_VQ2Vhzd4dFy2KLPp-KwDsjK27HoZF6w webhook
-12389000
-
-met tout ce qu'on a deja coder dans le server.js pour qu'il y ait plus d'erreur stp
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: "#000",
+    paddingTop: Platform.OS === "android" ? StatusBar.currentHeight : 0,
+  },
+  webview: {
+    flex: 1,
+  },
+  footer: {
+    backgroundColor: "#000",
+    paddingVertical: 12,
+    borderTopWidth: 0.5,
+    borderTopColor: "#1e293b",
+    alignItems: "center",
+  },
+  footerText: {
+    color: "#64748b",
+    fontSize: 10,
+    fontWeight: "600",
+    letterSpacing: 1,
+  },
+  // Styles pour l'écran Hors-ligne
+  errorContainer: {
+    flex: 1,
+    backgroundColor: "#000",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  errorEmoji: {
+    fontSize: 50,
+    marginBottom: 20,
+  },
+  errorText: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "bold",
+    marginBottom: 10,
+  },
+  errorSubText: {
+    color: "#64748b",
+    textAlign: "center",
+    lineHeight: 20,
+  },
+});

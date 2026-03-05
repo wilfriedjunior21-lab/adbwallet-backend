@@ -9,6 +9,7 @@ const { v4: uuidv4 } = require("uuid");
 const multer = require("multer");
 const cloudinary = require("cloudinary").v2;
 const { CloudinaryStorage } = require("multer-storage-cloudinary");
+const nodemailer = require("nodemailer"); // AJOUTÉ : Pour les emails
 
 const app = express();
 app.use(express.json());
@@ -19,6 +20,47 @@ app.use(
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
+
+// --- CONFIGURATION NODEMAILER ---
+// Remplace par tes vrais identifiants (Gmail nécessite un "Mot de passe d'application")
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.EMAIL_USER || "votre-email@gmail.com",
+    pass: process.env.EMAIL_PASS || "votre-mot-de-passe-application",
+  },
+});
+
+// Fonction utilitaire pour envoyer le reçu
+const sendReceiptEmail = async (userEmail, userName, details) => {
+  try {
+    const mailOptions = {
+      from: '"ADB WALLET" <noreply@adbwallet.com>',
+      to: userEmail,
+      subject: `Reçu de Transaction - ${details.type.toUpperCase()}`,
+      html: `
+        <div style="font-family: Arial, sans-serif; background-color: #000; color: #fff; padding: 20px; border-radius: 15px; max-width: 500px; margin: auto; border: 1px solid #333;">
+          <h2 style="color: #3b82f6; text-align: center;">ADB WALLET</h2>
+          <p style="text-align: center; color: #888; font-size: 12px;">REÇU DE TRANSACTION OFFICIEL</p>
+          <hr style="border: 0.5px solid #222;" />
+          <div style="padding: 10px 0;">
+            <p><strong>Client :</strong> ${userName}</p>
+            <p><strong>Type :</strong> ${details.type}</p>
+            <p><strong>Montant :</strong> <span style="color: #10b981; font-weight: bold;">${details.amount} FCFA</span></p>
+            <p><strong>Date :</strong> ${new Date().toLocaleString()}</p>
+            <p><strong>Référence :</strong> ${details.ref || "ADB-" + uuidv4().substring(0, 6).toUpperCase()}</p>
+          </div>
+          <hr style="border: 0.5px solid #222;" />
+          <p style="font-size: 10px; color: #555; text-align: center;">Merci d'utiliser ADB WALLET pour vos investissements financiers.</p>
+        </div>
+      `,
+    };
+    await transporter.sendMail(mailOptions);
+    console.log(`✅ Email envoyé à ${userEmail}`);
+  } catch (error) {
+    console.error("❌ Erreur envoi email:", error);
+  }
+};
 
 // --- 1. CONFIGURATION CLOUDINARY (WILFRIED) ---
 cloudinary.config({
@@ -46,7 +88,7 @@ mongoose
   })
   .catch((err) => console.error("❌ Erreur MongoDB:", err));
 
-// --- 3. TOUS LES MODÈLES (PRÉSERVÉS ET ENRICHIS POUR LE PORTFOLIO) ---
+// --- 3. TOUS LES MODÈLES ---
 const User = mongoose.model(
   "User",
   new mongoose.Schema({
@@ -66,7 +108,6 @@ const User = mongoose.model(
       default: "non_verifie",
     },
     kycDocUrl: { type: String, default: "" },
-    // Portfolio requis pour Wallet.jsx
     portfolio: [
       {
         actionId: { type: mongoose.Schema.Types.ObjectId, ref: "Action" },
@@ -144,7 +185,7 @@ const Transaction = mongoose.model(
     recipientPhone: { type: String, default: "" },
     paymentNumber: { type: String, default: "" },
     referenceId: String,
-    comment: String, // Utilisé par Wallet.jsx pour afficher la raison du refus
+    comment: String,
     date: { type: Date, default: Date.now },
   })
 );
@@ -177,7 +218,7 @@ const Message = mongoose.model(
   })
 );
 
-// --- 4. MOTEUR DE MARCHÉ (FONCTION D'ORIGINE) ---
+// --- 4. MOTEUR DE MARCHÉ ---
 const startMarketEngine = () => {
   setInterval(async () => {
     try {
@@ -277,7 +318,7 @@ app.post("/api/user/submit-kyc", async (req, res) => {
   }
 });
 
-// --- 7. ROUTES ACTIONS & OBLIGATIONS (PRÉSERVÉES + ÉDITION) ---
+// --- 7. ROUTES ACTIONS & OBLIGATIONS ---
 app.get("/api/actions", async (req, res) =>
   res.json(await Action.find().populate("creatorId", "name profilePic"))
 );
@@ -330,7 +371,7 @@ app.patch("/api/obligations/:id", async (req, res) => {
   res.json(bond);
 });
 
-// --- 8. SYSTÈME DE TRANSACTIONS (ACHAT / VENTE / SOUSCRIPTION) ---
+// --- 8. SYSTÈME DE TRANSACTIONS ---
 app.post("/api/transactions/buy", async (req, res) => {
   const { userId, actionId, quantity } = req.body;
   const user = await User.findById(userId);
@@ -347,7 +388,7 @@ app.post("/api/transactions/buy", async (req, res) => {
     action.availableQuantity -= quantity;
     action.price = Math.round(action.price + action.price * 0.0005 * quantity);
     await action.save();
-    await new Transaction({
+    const tx = await new Transaction({
       userId,
       actionId,
       quantity,
@@ -355,6 +396,10 @@ app.post("/api/transactions/buy", async (req, res) => {
       type: "achat",
       status: "valide",
     }).save();
+    
+    // ENVOI REÇU
+    sendReceiptEmail(user.email, user.name, { type: "Achat Actions", amount: cost, ref: tx._id });
+
     res.json({ message: "Achat réussi" });
   } else res.status(400).json({ error: "Solde ou stock insuffisant" });
 });
@@ -377,7 +422,7 @@ app.post("/api/transactions/sell", async (req, res) => {
       Math.round(action.price - action.price * 0.0003 * quantity)
     );
     await action.save();
-    await new Transaction({
+    const tx = await new Transaction({
       userId,
       actionId,
       quantity,
@@ -385,6 +430,10 @@ app.post("/api/transactions/sell", async (req, res) => {
       type: "vente",
       status: "valide",
     }).save();
+
+    // ENVOI REÇU
+    sendReceiptEmail(user.email, user.name, { type: "Vente Actions", amount: gain, ref: tx._id });
+
     res.json({ message: "Vente réussie" });
   } else
     res
@@ -402,13 +451,17 @@ app.post("/api/transactions/subscribe-bond", async (req, res) => {
   bond.montantCollecte += Number(amount);
   await user.save();
   await bond.save();
-  await new Transaction({
+  const tx = await new Transaction({
     userId,
     bondId,
     amount,
     type: "souscription_obligation",
     status: "valide",
   }).save();
+
+  // ENVOI REÇU
+  sendReceiptEmail(user.email, user.name, { type: "Souscription Obligation", amount, ref: tx._id });
+
   res.json({ message: "Souscription réussie" });
 });
 
@@ -475,7 +528,7 @@ app.patch("/api/messages/reply/:id", async (req, res) => {
   );
 });
 
-// --- 10. ADMINISTRATION (ADMINPANEL.JSX) ---
+// --- 10. ADMINISTRATION ---
 app.get("/api/admin/users", async (req, res) =>
   res.json(await User.find().select("-password").sort({ name: 1 }))
 );
@@ -507,9 +560,11 @@ app.patch("/api/admin/bonds/:id/validate", async (req, res) => {
 });
 
 app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
-  const tx = await Transaction.findById(req.params.id);
+  const tx = await Transaction.findById(req.params.id).populate("userId");
   if (tx.type === "depot" && tx.status === "en_attente") {
-    await User.findByIdAndUpdate(tx.userId, { $inc: { balance: tx.amount } });
+    await User.findByIdAndUpdate(tx.userId._id, { $inc: { balance: tx.amount } });
+    // ENVOI REÇU DÉPOT
+    sendReceiptEmail(tx.userId.email, tx.userId.name, { type: "Dépôt validé", amount: tx.amount, ref: tx.referenceId || tx._id });
   }
   tx.status = "valide";
   await tx.save();
@@ -521,7 +576,7 @@ app.patch("/api/admin/transactions/:id/reject", async (req, res) => {
   if (tx.status === "en_attente") {
     await User.findByIdAndUpdate(tx.userId, { $inc: { balance: tx.amount } });
     tx.status = "rejete";
-    tx.comment = req.body.reason; // Motif stocké dans 'comment' pour Wallet.jsx
+    tx.comment = req.body.reason;
     await tx.save();
   }
   res.json({ message: "Transaction rejetée et utilisateur remboursé" });
@@ -536,13 +591,16 @@ app.post("/api/admin/distribute-dividends", async (req, res) => {
     u.balance += total;
     u.totalProfitGained += total;
     await u.save();
-    await new Transaction({
+    const tx = await new Transaction({
       userId: u._id,
       actionId,
       amount: total,
       type: "dividende",
       status: "valide",
     }).save();
+
+    // ENVOI REÇU DIVIDENDE
+    sendReceiptEmail(u.email, u.name, { type: "Distribution Dividendes", amount: total, ref: tx._id });
   }
   res.json({ message: "Dividendes distribués avec succès" });
 });
