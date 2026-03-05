@@ -22,7 +22,6 @@ app.use(
 );
 
 // --- CONFIGURATION NODEMAILER ---
-// Remplace par tes vrais identifiants (Gmail nécessite un "Mot de passe d'application")
 const transporter = nodemailer.createTransport({
   service: "gmail",
   auth: {
@@ -46,9 +45,13 @@ const sendReceiptEmail = async (userEmail, userName, details) => {
           <div style="padding: 10px 0;">
             <p><strong>Client :</strong> ${userName}</p>
             <p><strong>Type :</strong> ${details.type}</p>
-            <p><strong>Montant :</strong> <span style="color: #10b981; font-weight: bold;">${details.amount} FCFA</span></p>
+            <p><strong>Montant :</strong> <span style="color: #10b981; font-weight: bold;">${
+              details.amount
+            } FCFA</span></p>
             <p><strong>Date :</strong> ${new Date().toLocaleString()}</p>
-            <p><strong>Référence :</strong> ${details.ref || "ADB-" + uuidv4().substring(0, 6).toUpperCase()}</p>
+            <p><strong>Référence :</strong> ${
+              details.ref || "ADB-" + uuidv4().substring(0, 6).toUpperCase()
+            }</p>
           </div>
           <hr style="border: 0.5px solid #222;" />
           <p style="font-size: 10px; color: #555; text-align: center;">Merci d'utiliser ADB WALLET pour vos investissements financiers.</p>
@@ -396,9 +399,13 @@ app.post("/api/transactions/buy", async (req, res) => {
       type: "achat",
       status: "valide",
     }).save();
-    
+
     // ENVOI REÇU
-    sendReceiptEmail(user.email, user.name, { type: "Achat Actions", amount: cost, ref: tx._id });
+    sendReceiptEmail(user.email, user.name, {
+      type: "Achat Actions",
+      amount: cost,
+      ref: tx._id,
+    });
 
     res.json({ message: "Achat réussi" });
   } else res.status(400).json({ error: "Solde ou stock insuffisant" });
@@ -432,7 +439,11 @@ app.post("/api/transactions/sell", async (req, res) => {
     }).save();
 
     // ENVOI REÇU
-    sendReceiptEmail(user.email, user.name, { type: "Vente Actions", amount: gain, ref: tx._id });
+    sendReceiptEmail(user.email, user.name, {
+      type: "Vente Actions",
+      amount: gain,
+      ref: tx._id,
+    });
 
     res.json({ message: "Vente réussie" });
   } else
@@ -460,7 +471,11 @@ app.post("/api/transactions/subscribe-bond", async (req, res) => {
   }).save();
 
   // ENVOI REÇU
-  sendReceiptEmail(user.email, user.name, { type: "Souscription Obligation", amount, ref: tx._id });
+  sendReceiptEmail(user.email, user.name, {
+    type: "Souscription Obligation",
+    amount,
+    ref: tx._id,
+  });
 
   res.json({ message: "Souscription réussie" });
 });
@@ -562,9 +577,15 @@ app.patch("/api/admin/bonds/:id/validate", async (req, res) => {
 app.patch("/api/admin/transactions/:id/validate", async (req, res) => {
   const tx = await Transaction.findById(req.params.id).populate("userId");
   if (tx.type === "depot" && tx.status === "en_attente") {
-    await User.findByIdAndUpdate(tx.userId._id, { $inc: { balance: tx.amount } });
+    await User.findByIdAndUpdate(tx.userId._id, {
+      $inc: { balance: tx.amount },
+    });
     // ENVOI REÇU DÉPOT
-    sendReceiptEmail(tx.userId.email, tx.userId.name, { type: "Dépôt validé", amount: tx.amount, ref: tx.referenceId || tx._id });
+    sendReceiptEmail(tx.userId.email, tx.userId.name, {
+      type: "Dépôt validé",
+      amount: tx.amount,
+      ref: tx.referenceId || tx._id,
+    });
   }
   tx.status = "valide";
   await tx.save();
@@ -600,7 +621,11 @@ app.post("/api/admin/distribute-dividends", async (req, res) => {
     }).save();
 
     // ENVOI REÇU DIVIDENDE
-    sendReceiptEmail(u.email, u.name, { type: "Distribution Dividendes", amount: total, ref: tx._id });
+    sendReceiptEmail(u.email, u.name, {
+      type: "Distribution Dividendes",
+      amount: total,
+      ref: tx._id,
+    });
   }
   res.json({ message: "Dividendes distribués avec succès" });
 });
@@ -636,11 +661,58 @@ app.post("/api/payments/paymooney/init", async (req, res) => {
   }
 });
 
-app.get("/api/notifications/:userId", async (req, res) =>
-  res.json(
-    await Notification.find({ userId: req.params.userId }).sort({ date: -1 })
-  )
-);
+// --- AJOUT ROUTES NOTIFICATIONS (WILFRIED) ---
+
+// Récupérer toutes les notifications d'un utilisateur
+app.get("/api/notifications/:userId", async (req, res) => {
+  try {
+    const notifications = await Notification.find({
+      userId: req.params.userId,
+    }).sort({ date: -1 });
+    res.json(notifications);
+  } catch (error) {
+    res
+      .status(500)
+      .json({ error: "Erreur lors de la récupération des notifications" });
+  }
+});
+
+// Marquer une notification spécifique comme lue
+app.patch("/api/notifications/:id/read", async (req, res) => {
+  try {
+    await Notification.findByIdAndUpdate(req.params.id, { read: true });
+    res.json({ message: "Notification marquée comme lue" });
+  } catch (error) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Marquer toutes les notifications d'un utilisateur comme lues
+app.put("/api/notifications/read-all/:userId", async (req, res) => {
+  try {
+    await Notification.updateMany(
+      { userId: req.params.userId, read: false },
+      { read: true }
+    );
+    res.json({
+      message: "Toutes les notifications ont été marquées comme lues",
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Supprimer une notification
+app.delete("/api/notifications/:id", async (req, res) => {
+  try {
+    await Notification.findByIdAndDelete(req.params.id);
+    res.json({ message: "Notification supprimée" });
+  } catch (error) {
+    res.status(500).json({ error: "Erreur lors de la suppression" });
+  }
+});
+
+// --- FIN AJOUT ROUTES NOTIFICATIONS ---
 
 // --- DÉMARRAGE ---
 const PORT = process.env.PORT || 5000;

@@ -3,7 +3,8 @@ https://adbwallet-backend.onrender.com/api/payments/paymooney-notify
 https://adbwallet-backend.onrender.com/dashboard-acheteur
 
 
-voici mon server.js ajoute juste ce qu'il faut sans toucher a mes fonctionnaliter
+
+voici mon dashboardactionnaire.jsx ajoute juste ce qu'il faut sans toucher a mes fonctionnaliter stp ne touche rien ne supprime rien et donne moi le code complet
 wilfriedjunior21
 secret :kGzwKVICcHtqaWH5z-s8ST1lL5M
 apikey: 282333729488766
