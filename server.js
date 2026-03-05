@@ -630,6 +630,39 @@ app.post("/api/admin/distribute-dividends", async (req, res) => {
   res.json({ message: "Dividendes distribués avec succès" });
 });
 
+// --- STATISTIQUES ADMIN (COURBE ET TOTAL) ---
+app.get("/api/admin/stats/transactions", async (req, res) => {
+  try {
+    // 1. Nombre total de transactions
+    const totalTransactions = await Transaction.countDocuments();
+
+    // 2. Calcul des transactions par jour sur les 7 derniers jours
+    const stats = await Transaction.aggregate([
+      {
+        $match: {
+          date: {
+            $gte: new Date(new Date().setDate(new Date().getDate() - 7)),
+          },
+        },
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$date" } },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]);
+
+    res.json({
+      total: totalTransactions,
+      chartData: stats.map((s) => ({ date: s._id, count: s.count })),
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Erreur stats" });
+  }
+});
+
 // --- 11. PAIEMENTS PAYMOONEY & NOTIFICATIONS ---
 app.post("/api/payments/paymooney/init", async (req, res) => {
   try {
